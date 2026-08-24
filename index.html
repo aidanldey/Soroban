@@ -1,0 +1,2221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#efe9df" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#17140f" media="(prefers-color-scheme: dark)">
+<meta name="description" content="A tactile digital soroban (Japanese abacus): free play, satisfying feel and sound, and a guided tutor.">
+<title>Soroban</title>
+<script>
+/* Theme bootstrap: resolve saved theme before first paint to avoid a flash.
+   Runs before CSS applies; safe if storage throws (WebView previews). */
+(function(){
+  var t = 'auto';
+  try { var s = JSON.parse(localStorage.getItem('soroban.settings')||'{}'); if (s.theme) t = s.theme; } catch(e){}
+  if (t === 'auto') t = (window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', t);
+})();
+</script>
+<style>
+/* ============================================================ UI CHROME
+   These variables style the app shell (toolbar, panels, tutor bar).
+   The abacus itself is styled by the SKINS registry in JS (SVG paints). */
+:root {
+  --bg:#efe9df; --bg2:#e4dccd; --fg:#2b241a; --fg-dim:#6b6154;
+  --panel:#f8f5ee; --panel-edge:#d8cfc0; --control:#efe9dd; --control-edge:#c9bfae;
+  --accent:#a85a20; --accent-fg:#ffffff; --focus:#1d5fd0;
+  --good:#1d7a3e; --bad:#b3342e; --hint:#8a5a12;
+  --shadow:0 10px 30px rgba(40,30,15,.18);
+  --tutor-bg:#fdf9f0; --tutor-edge:#e0d5c0;
+}
+html[data-theme="dark"] {
+  --bg:#17140f; --bg2:#100e0a; --fg:#ece5d8; --fg-dim:#a49a89;
+  --panel:#221e17; --panel-edge:#3a342a; --control:#2b261e; --control-edge:#4a4234;
+  --accent:#d98b45; --accent-fg:#1c1710; --focus:#7fb0ff;
+  --good:#5cc07f; --bad:#ee7b74; --hint:#e0b45e;
+  --shadow:0 10px 30px rgba(0,0,0,.5);
+  --tutor-bg:#241f16; --tutor-edge:#463d2c;
+}
+* { box-sizing:border-box; margin:0; padding:0; }
+html, body { height:100%; }
+body {
+  font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background:var(--bg); color:var(--fg);
+  overflow:hidden; overscroll-behavior:none;
+  -webkit-user-select:none; user-select:none; -webkit-touch-callout:none;
+  -webkit-tap-highlight-color:transparent;
+  touch-action:manipulation;
+}
+#app {
+  height:100%; display:flex; flex-direction:column;
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+/* ---- Top bar ---- */
+#topbar {
+  display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  padding:8px 12px; min-height:52px;
+}
+#appTitle { font-weight:700; font-size:17px; letter-spacing:.02em; margin-right:2px; }
+#readout {
+  flex:1 1 auto; min-width:0; text-align:center;
+  font-variant-numeric:tabular-nums; font-weight:650;
+  font-size:clamp(20px, 4.5vw, 34px); line-height:1.1;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+#readout[hidden] { display:none; }
+#readout .dg { display:inline-block; }
+#readout .dg.in { animation:dgin .18s ease-out; }
+@keyframes dgin { from { transform:translateY(-.35em); opacity:0; } to { transform:none; opacity:1; } }
+#topbtns { display:flex; gap:8px; margin-left:auto; }
+
+/* ---- Buttons & controls ---- */
+button {
+  font:inherit; color:var(--fg); background:var(--control);
+  border:1px solid var(--control-edge); border-radius:10px;
+  min-height:44px; min-width:44px; padding:8px 14px;
+  cursor:pointer; display:inline-flex; align-items:center; justify-content:center; gap:6px;
+  transition:background .12s ease, transform .06s ease;
+}
+button:active { transform:scale(.97); }
+button.primary { background:var(--accent); color:var(--accent-fg); border-color:transparent; font-weight:650; }
+button.icon { padding:8px; }
+button svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:1.9; stroke-linecap:round; stroke-linejoin:round; }
+button[aria-pressed="false"] .on-only { display:none; }
+button[aria-pressed="true"] .off-only { display:none; }
+select, input[type="number"], input[type="text"] {
+  font:inherit; color:var(--fg); background:var(--control);
+  border:1px solid var(--control-edge); border-radius:8px; min-height:40px; padding:6px 10px;
+}
+input[type="range"] { width:100%; accent-color:var(--accent); min-height:32px; }
+:focus-visible { outline:3px solid var(--focus); outline-offset:2px; }
+
+/* ---- Stage / abacus ---- */
+#stage {
+  flex:1 1 auto; min-height:0; position:relative;
+  display:flex; align-items:center; justify-content:center;
+}
+#abacusWrap {
+  max-width:100%; max-height:100%; overflow-x:auto; overflow-y:hidden;
+  scrollbar-width:none; -webkit-overflow-scrolling:touch;
+  border-radius:18px;
+}
+#abacusWrap::-webkit-scrollbar { display:none; }
+#abacus { display:block; touch-action:pan-x; }
+/* Beads and their hit zones own their gestures completely. */
+#abacus .bead-hit, #abacus .bead { touch-action:none; cursor:grab; }
+#abacus .bead-hit:active { cursor:grabbing; }
+#abacus .rodgroup:focus { outline:none; }
+#abacus .rodgroup:focus-visible .rod-focus { opacity:1; }
+#abacus .rod-focus {
+  opacity:0; fill:none; stroke:var(--focus); stroke-width:3; rx:10;
+  pointer-events:none; transition:opacity .1s;
+}
+#abacus .unit-dot { cursor:pointer; }
+#abacus .bead-g { will-change:transform; }
+#abacus .bead-g.snap { transition:transform var(--snap-ms,120ms) cubic-bezier(.17,.84,.44,1); }
+#abacus .tutor-glow { pointer-events:none; }
+#abacus .tutor-arrow { pointer-events:none; }
+@keyframes tglow { 0%,100% { opacity:.55; } 50% { opacity:1; } }
+#abacus .tutor-glow ellipse, #abacus .tutor-arrow { animation:tglow 1.2s ease-in-out infinite; }
+@keyframes shakex { 0%,100%{transform:translateX(0)} 25%{transform:translateX(-5px)} 75%{transform:translateX(5px)} }
+#abacusWrap.shake { animation:shakex .28s ease-in-out 2; }
+
+/* ---- Tutor bar ---- */
+#tutorBar {
+  background:var(--tutor-bg); border-top:1px solid var(--tutor-edge);
+  padding:10px 14px; display:flex; flex-direction:column; gap:8px;
+}
+#tutorBar[hidden] { display:none; }
+#tutorTop { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+#tutorProblem { font-size:clamp(18px,3.5vw,26px); font-weight:700; font-variant-numeric:tabular-nums; }
+#tutorProgress { color:var(--fg-dim); font-size:14px; margin-left:auto; white-space:nowrap; }
+#tutorMsg { font-size:15px; line-height:1.45; min-height:1.4em; }
+#tutorMsg.err { color:var(--bad); font-weight:600; }
+#tutorMsg.ok { color:var(--good); font-weight:600; }
+#tutorBtns { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+#tutorBtns button { min-height:40px; padding:6px 12px; }
+#freeForm { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+#freeForm input { width:110px; }
+#freeForm[hidden] { display:none; }
+
+/* ---- Settings sheet ---- */
+#scrim {
+  position:fixed; inset:0; background:rgba(0,0,0,.4); z-index:40;
+  opacity:1; transition:opacity .2s;
+}
+#scrim[hidden] { display:none; }
+#settings {
+  position:fixed; z-index:50; top:0; right:0; bottom:0;
+  width:min(360px, 92vw); background:var(--panel);
+  border-left:1px solid var(--panel-edge); box-shadow:var(--shadow);
+  padding:calc(14px + env(safe-area-inset-top)) 18px calc(18px + env(safe-area-inset-bottom));
+  overflow-y:auto; transform:translateX(0); transition:transform .22s ease-out;
+  display:flex; flex-direction:column; gap:16px;
+}
+#settings[hidden] { display:none; }
+#settings h2 { font-size:18px; display:flex; align-items:center; justify-content:space-between; }
+#settings .row { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+#settings .row > label:first-child { flex:1; }
+#settings .col { display:flex; flex-direction:column; gap:6px; }
+#settings .seg { display:flex; border:1px solid var(--control-edge); border-radius:10px; overflow:hidden; }
+#settings .seg button { border:0; border-radius:0; flex:1; min-height:40px; background:transparent; }
+#settings .seg button[aria-pressed="true"] { background:var(--accent); color:var(--accent-fg); font-weight:650; }
+#settings hr { border:0; border-top:1px solid var(--panel-edge); }
+#settings .note { color:var(--fg-dim); font-size:13px; line-height:1.4; }
+.switch { position:relative; width:52px; height:30px; flex:none; }
+.switch input { position:absolute; inset:0; opacity:0; margin:0; cursor:pointer; width:100%; height:100%; }
+.switch .tr {
+  position:absolute; inset:0; border-radius:999px; background:var(--control-edge); transition:background .15s;
+  pointer-events:none;
+}
+.switch .tr::after {
+  content:""; position:absolute; top:3px; left:3px; width:24px; height:24px; border-radius:50%;
+  background:var(--panel); box-shadow:0 1px 3px rgba(0,0,0,.3); transition:transform .15s;
+}
+.switch input:checked + .tr { background:var(--accent); }
+.switch input:checked + .tr::after { transform:translateX(22px); }
+.switch input:focus-visible + .tr { outline:3px solid var(--focus); outline-offset:2px; }
+
+/* ---- Hints, misc ---- */
+#rotateHint {
+  position:absolute; left:50%; bottom:14px; transform:translateX(-50%);
+  background:var(--panel); border:1px solid var(--panel-edge); border-radius:12px;
+  box-shadow:var(--shadow); padding:10px 14px; font-size:14px; z-index:30;
+  display:flex; gap:10px; align-items:center; max-width:92%;
+}
+#rotateHint[hidden] { display:none; }
+#rotateHint button { min-height:36px; min-width:36px; padding:4px 10px; }
+.visually-hidden {
+  position:absolute; width:1px; height:1px; overflow:hidden;
+  clip:rect(0 0 0 0); white-space:nowrap;
+}
+
+@media (max-width:520px) {
+  #appTitle { display:none; }
+  #topbar { padding:6px 8px; gap:6px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #abacus .bead-g.snap { transition-duration:40ms; }
+  #readout .dg.in { animation:none; }
+  #abacus .tutor-glow ellipse, #abacus .tutor-arrow { animation:none; opacity:.9; }
+  #abacusWrap.shake { animation:none; }
+  #settings { transition:none; }
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <header id="topbar">
+    <span id="appTitle">Soroban</span>
+    <output id="readout" aria-hidden="true">0</output>
+    <div id="topbtns">
+      <button id="btnUndo" class="icon" title="Undo (Ctrl+Z)" aria-label="Undo">
+        <svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h9a7 7 0 0 1 7 7v1"/></svg>
+      </button>
+      <button id="btnClear" title="Clear the abacus (Esc)" aria-label="Clear the abacus">Clear</button>
+      <button id="btnSound" class="icon" title="Sound on/off" aria-label="Sound" aria-pressed="true">
+        <svg viewBox="0 0 24 24" class="on-only"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18 6a8.5 8.5 0 0 1 0 12"/></svg>
+        <svg viewBox="0 0 24 24" class="off-only"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="m16 9 5 5m0-5-5 5"/></svg>
+      </button>
+      <button id="btnSettings" class="icon" title="Settings" aria-label="Settings" aria-haspopup="dialog">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.01a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h.01a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.01a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main id="stage">
+    <div id="abacusWrap">
+      <svg id="abacus" xmlns="http://www.w3.org/2000/svg" role="application"
+           aria-label="Soroban abacus. Use arrow keys to move between rods, number keys to set a rod's value."></svg>
+    </div>
+    <div id="rotateHint" hidden>
+      <span>Rotate your device for a better fit with this many rods.</span>
+      <button id="rotateHintClose" aria-label="Dismiss hint">OK</button>
+    </div>
+  </main>
+
+  <section id="tutorBar" hidden aria-label="Tutor">
+    <div id="tutorTop">
+      <label for="tutorSet" class="visually-hidden">Problem set</label>
+      <select id="tutorSet">
+        <option value="add1">Addition — simple</option>
+        <option value="add5">Addition — 5's complements</option>
+        <option value="add10">Addition — 10's complements</option>
+        <option value="sub1">Subtraction — simple</option>
+        <option value="sub5">Subtraction — 5's complements</option>
+        <option value="sub10">Subtraction — 10's complements</option>
+        <option value="mixed">Mixed review</option>
+        <option value="free">Free practice</option>
+      </select>
+      <span id="tutorProblem" aria-live="polite"></span>
+      <span id="tutorProgress" aria-live="polite"></span>
+    </div>
+    <div id="freeForm" hidden>
+      <input id="freeA" type="text" inputmode="decimal" placeholder="First number" aria-label="First number">
+      <select id="freeOp" aria-label="Operation"><option value="+">+</option><option value="-">−</option></select>
+      <input id="freeB" type="text" inputmode="decimal" placeholder="Second number" aria-label="Second number">
+      <button id="freeGo" class="primary">Start</button>
+    </div>
+    <div id="tutorMsg" aria-live="polite"></div>
+    <div id="tutorBtns">
+      <button id="tutorShow">Show me</button>
+      <button id="tutorNew">New problem</button>
+      <button id="tutorExit">Exit tutor</button>
+    </div>
+  </section>
+
+  <div id="scrim" hidden></div>
+  <aside id="settings" hidden role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <h2><span id="settingsTitle">Settings</span>
+      <button id="settingsClose" class="icon" aria-label="Close settings">
+        <svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg>
+      </button>
+    </h2>
+    <div class="col">
+      <label for="setSkin">Skin</label>
+      <select id="setSkin"></select>
+    </div>
+    <div class="col">
+      <span id="themeLabel">Theme</span>
+      <div class="seg" role="group" aria-labelledby="themeLabel">
+        <button data-theme-opt="auto" aria-pressed="false">Auto</button>
+        <button data-theme-opt="light" aria-pressed="false">Light</button>
+        <button data-theme-opt="dark" aria-pressed="false">Dark</button>
+      </div>
+    </div>
+    <hr>
+    <div class="row">
+      <label for="setSound">Sound</label>
+      <span class="switch"><input type="checkbox" id="setSound"><span class="tr"></span></span>
+    </div>
+    <div class="col">
+      <label for="setVolume">Volume</label>
+      <input type="range" id="setVolume" min="0" max="100" step="1">
+    </div>
+    <div class="col">
+      <label for="setMaterial">Sound material</label>
+      <select id="setMaterial">
+        <option value="auto">Match skin</option>
+        <option value="wood">Wood on wood</option>
+        <option value="woodMetal">Wood on metal</option>
+        <option value="metal">Metal on metal</option>
+      </select>
+    </div>
+    <div class="row" id="hapticsRow">
+      <label for="setHaptics">Haptics</label>
+      <span class="switch"><input type="checkbox" id="setHaptics"><span class="tr"></span></span>
+    </div>
+    <hr>
+    <div class="col">
+      <label for="setRods">Rods</label>
+      <select id="setRods"></select>
+    </div>
+    <div class="row">
+      <label for="setReadout">Numeral readout</label>
+      <span class="switch"><input type="checkbox" id="setReadout"><span class="tr"></span></span>
+    </div>
+    <hr>
+    <button id="setTutor" class="primary">Start guided tutor</button>
+    <p class="note">Tap a dot on the beam to choose the ones column. Two-finger swipe across the frame to clear, like tilting a real soroban. Everything stays on this device — no network, no tracking.</p>
+  </aside>
+
+  <div id="live" class="visually-hidden" aria-live="polite"></div>
+</div>
+
+
+<script>
+'use strict';
+/* =====================================================================
+   DIGITAL SOROBAN — single-file app
+   =====================================================================
+   Where to change things (for future editors):
+
+   • CONFIG        — every tunable constant: bead geometry, animation
+                     timings, drag/flick physics thresholds, audio
+                     parameters, haptics, and default settings. Change
+                     numbers here, not inline in the modules.
+   • ABACUS_TYPES  — the abacus layout registry. Bead counts and values
+                     per rod are DATA. To add a Chinese suanpan, add an
+                     entry (heavenBeads:2, earthBeads:5) — nothing else
+                     should need to change. See the comment block above
+                     the registry for the full extension procedure.
+   • SKINS         — the visual skin registry. Each skin is a data
+                     object with a light and a dark palette plus a
+                     pointer to its audio material profile. Add a fourth
+                     skin by adding an object; the settings UI, the
+                     renderer, and the audio hookup pick it up
+                     automatically.
+
+   Module order (decoupled; Renderer never mutates State, Audio knows
+   nothing about the DOM): CONFIG, ABACUS_TYPES, SKINS, Store, State,
+   Renderer, Input, AudioEngine, Haptics, Tutor, Settings, App.
+   ===================================================================== */
+
+/* ============================================================ CONFIG */
+const CONFIG = {
+  geometry: {
+    beadW: 58,        // bead width (SVG units)
+    beadH: 34,        // bead height = travel step along the rod
+    rodSpacing: 72,   // horizontal pitch between rods
+    frameSide: 26,    // left/right frame thickness
+    frameTopBot: 24,  // top/bottom frame thickness
+    barH: 14,         // reckoning-bar height
+    minBeadPx: 46,    // if a rod column renders narrower than this many
+                      // CSS px, the abacus grows and pans instead
+    hitPad: 6,        // extra invisible hit area around each bead (SVG units)
+  },
+  anim: {
+    snapMs: 120,      // release snap duration
+    flickSnapMs: 65,  // snap duration after a fast flick
+    clearStaggerMs: 14, // per-rod delay in the clear cascade
+    showMeMs: 380,    // "show me" tutor animation duration
+  },
+  physics: {
+    commitFraction: 0.5,  // travel past this fraction of the gap commits
+    flickVelocity: 0.7,   // px/ms (CSS px) release speed that commits regardless
+    tapMaxMovePx: 9,      // pointer travel under this is a tap, not a drag
+    tapMaxMs: 400,
+    impactMinVel: 0.12,   // px/ms below which a drag contact is silent
+    velSmoothing: 0.35,   // EMA factor for velocity tracking
+  },
+  audio: {
+    maxVoices: 12,        // concurrent voices; oldest is stolen
+    staggerMs: 7,         // per-bead delay when a stack lands
+    humanizePitch: 0.03,  // ±3% random pitch per hit
+    humanizeTimeMs: 4,    // ± random scheduling jitter per hit
+    masterGain: 0.9,
+  },
+  haptics: { minMs: 8, maxMs: 15 },
+  clearGesture: { minDxPx: 110, maxDurMs: 900 }, // two-finger swipe across frame
+  undoDepth: 50,
+  rodCounts: [7, 13, 17, 21],
+  defaults: {
+    rodCount: 13, skin: 'woodWood', theme: 'auto',
+    sound: true, volume: 0.8, material: 'auto',
+    haptics: true, readout: true,
+  },
+};
+
+/* ===================================================== ABACUS_TYPES
+   ------------------------------------------------------------------
+   THE ABACUS LAYOUT IS DATA, NOT CODE.
+   Every part of this file — rendering, value computation, tap
+   targets, drag clamping, keyboard entry, the tutor's complement
+   planner, and the readout — derives bead counts and values from the
+   active entry here. Nothing anywhere assumes "1 heaven bead" or
+   "4 earth beads"; a dev assertion below fails loudly if that ever
+   regresses.
+
+   EXTENSION PROCEDURE — to add a Chinese suanpan (on its own page,
+   or by switching the active type):
+     1. Add an entry:
+          suanpan: { name:'Suanpan', heavenBeads:2, heavenValue:5,
+                     earthBeads:5, earthValue:1, beadShape:'rounded' }
+     2. Point ACTIVE_ABACUS_TYPE at it (or expose a picker).
+   No other code changes should be required. Rod-value capacity, free
+   travel gaps, tap/drag group logic, and the tutor's complement rules
+   all recompute from these numbers.
+   ------------------------------------------------------------------ */
+const ABACUS_TYPES = {
+  soroban: {
+    name: 'Soroban',
+    heavenBeads: 1,       // beads above the reckoning bar
+    heavenValue: 5,       // value of each heaven bead
+    earthBeads: 4,        // beads below the reckoning bar
+    earthValue: 1,        // value of each earth bead
+    beadShape: 'biconical',
+    unitDotEvery: 3,      // unit-dot marker on the bar every Nth rod
+  },
+  // NOTE: To add a Chinese suanpan, add an entry here with
+  // heavenBeads: 2, earthBeads: 5, beadShape: 'rounded'.
+  // No other code changes should be required. All rendering,
+  // value computation, tap targets, drag clamping, and readout
+  // logic must derive from these numbers — never assume 1 and 4.
+};
+const ACTIVE_ABACUS_TYPE = 'soroban';
+const ATYPE = ABACUS_TYPES[ACTIVE_ABACUS_TYPE];
+/* Max value one rod can hold (soroban: 9). Everything uses this. */
+const ROD_MAX = ATYPE.heavenBeads * ATYPE.heavenValue
+              + ATYPE.earthBeads * ATYPE.earthValue;
+
+/* ============================================================= SKINS
+   Each skin: bead gradient stops, specular highlight, bead edge, rod
+   paint + width, frame paint, reckoning-bar paint, backdrop, unit-dot
+   colors, and its audio material profile. Both palettes are designed,
+   not derived — dark wood is walnut, dark metal is gunmetal.
+   Add a fourth skin by adding an object; no code changes needed.     */
+const SKINS = {
+  woodWood: {
+    name: 'Wood on wood',
+    material: 'wood',
+    rodWidth: 9,
+    light: {
+      backdrop: '#e7ddcb',
+      frame: ['#a8763e', '#8a5a28', '#6f461d'],
+      frameEdge: '#5c3a17',
+      bar: ['#7a5122', '#5f3d17'],
+      rod: ['#b98d55', '#8f6832'],
+      bead: [['0%','#e8b87a'], ['35%','#c98a3e'], ['70%','#a5671f'], ['100%','#7c4a12']],
+      beadHi: 'rgba(255,240,210,0.85)',
+      beadEdge: 'rgba(70,40,10,0.55)',
+      shadow: 'rgba(60,35,10,0.35)',
+      dot: '#f5e8d2', dotActive: '#ffd57a',
+    },
+    dark: {
+      backdrop: '#211a12',
+      frame: ['#4a361f', '#3a2a18', '#2a1d0f'],
+      frameEdge: '#171007',
+      bar: ['#3a2a16', '#2a1d0e'],
+      rod: ['#6b5030', '#4a3620'],
+      bead: [['0%','#8a6236'], ['35%','#6e4a22'], ['70%','#54371a'], ['100%','#3a2410']],
+      beadHi: 'rgba(255,225,180,0.35)',
+      beadEdge: 'rgba(0,0,0,0.6)',
+      shadow: 'rgba(0,0,0,0.5)',
+      dot: '#d8c49a', dotActive: '#ffca63',
+    },
+  },
+  woodMetal: {
+    name: 'Wood on metal',
+    material: 'woodMetal',
+    rodWidth: 4,
+    light: {
+      backdrop: '#e9e2d4',
+      frame: ['#9d7440', '#7f5a2a', '#65441e'],
+      frameEdge: '#523516',
+      bar: ['#8c9199', '#6d737c'],
+      rod: ['#d9dde2', '#9aa0a8'],
+      bead: [['0%','#eabf83'], ['35%','#cd9047'], ['70%','#a96c24'], ['100%','#7f4d15']],
+      beadHi: 'rgba(255,242,215,0.85)',
+      beadEdge: 'rgba(70,40,10,0.55)',
+      shadow: 'rgba(60,40,15,0.35)',
+      dot: '#f2f4f6', dotActive: '#ffd57a',
+    },
+    dark: {
+      backdrop: '#1c1913',
+      frame: ['#44311c', '#382a19', '#281c0f'],
+      frameEdge: '#150f07',
+      bar: ['#3f444c', '#2c3138'],
+      rod: ['#7d838c', '#4f545c'],
+      bead: [['0%','#8f6739'], ['35%','#714d25'], ['70%','#56391b'], ['100%','#3b2511']],
+      beadHi: 'rgba(255,228,185,0.35)',
+      beadEdge: 'rgba(0,0,0,0.6)',
+      shadow: 'rgba(0,0,0,0.5)',
+      dot: '#aeb6bf', dotActive: '#ffca63',
+    },
+  },
+  metal: {
+    name: 'Metal on metal',
+    material: 'metal',
+    rodWidth: 4,
+    light: {
+      backdrop: '#e3e6ea',
+      frame: ['#c8cdd4', '#a7adb6', '#878e98'],
+      frameEdge: '#6a707a',
+      bar: ['#9aa1aa', '#7b828c'],
+      rod: ['#e6e9ed', '#a6acb5'],
+      bead: [['0%','#f6f8fa'], ['30%','#cfd5db'], ['65%','#9aa2ac'], ['100%','#6d747f']],
+      beadHi: 'rgba(255,255,255,0.95)',
+      beadEdge: 'rgba(50,56,66,0.55)',
+      shadow: 'rgba(40,46,56,0.35)',
+      dot: '#3d434c', dotActive: '#d07a1f',
+    },
+    dark: {
+      backdrop: '#14161a',
+      frame: ['#3c424b', '#2c313a', '#1f242b'],
+      frameEdge: '#0e1115',
+      bar: ['#2c323b', '#1e2329'],
+      rod: ['#6d747f', '#454b54'],
+      bead: [['0%','#9aa3ae'], ['30%','#6f7885'], ['65%','#4a525e'], ['100%','#2c323b']],
+      beadHi: 'rgba(220,230,245,0.5)',
+      beadEdge: 'rgba(0,0,0,0.65)',
+      shadow: 'rgba(0,0,0,0.55)',
+      dot: '#cfd6df', dotActive: '#f0a24a',
+    },
+  },
+};
+
+/* ============================================================== Store
+   localStorage wrapper with an in-memory fallback. Some WebView and
+   preview environments throw on any access; the app must degrade
+   silently, so every touch is inside try/catch.                      */
+const Store = (() => {
+  const mem = {};
+  function get(key, fallback) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw != null) return JSON.parse(raw);
+    } catch (e) { if (key in mem) return mem[key]; }
+    return (key in mem) ? mem[key] : fallback;
+  }
+  function set(key, value) {
+    mem[key] = value;
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) {}
+  }
+  return { get, set };
+})();
+
+/* ============================================================== State
+   Pure data model. rods[i] = { heaven: 0..heavenBeads, earth: 0..earthBeads },
+   indexed left to right. No DOM, no audio — mutations emit events that
+   the render/audio/tutor layers subscribe to.                        */
+const State = (() => {
+  let rods = [];          // [{heaven, earth}]
+  let rodCount = CONFIG.defaults.rodCount;
+  let onesIndex = 0;      // which rod is the ones column
+  const undoStack = [];   // snapshots, capped at CONFIG.undoDepth
+  const listeners = {};   // event -> [fn]
+
+  function on(evt, fn) { (listeners[evt] || (listeners[evt] = [])).push(fn); }
+  function emit(evt, payload) {
+    const fns = listeners[evt];
+    if (fns) for (let i = 0; i < fns.length; i++) fns[i](payload);
+  }
+
+  function defaultOnes(n) {
+    /* Default ones column: the rightmost unit-dot rod that leaves a
+       couple of decimal rods free on wide layouts, else the last rod. */
+    return n - 1;
+  }
+
+  function init(count, saved) {
+    rodCount = count;
+    rods = [];
+    for (let i = 0; i < count; i++) rods.push({ heaven: 0, earth: 0 });
+    onesIndex = defaultOnes(count);
+    if (saved && saved.rodCount === count && Array.isArray(saved.rods)) {
+      for (let i = 0; i < count; i++) {
+        const r = saved.rods[i];
+        if (r) {
+          rods[i].heaven = clampInt(r.heaven, 0, ATYPE.heavenBeads);
+          rods[i].earth = clampInt(r.earth, 0, ATYPE.earthBeads);
+        }
+      }
+      if (Number.isInteger(saved.onesIndex) && saved.onesIndex >= 0 && saved.onesIndex < count) {
+        onesIndex = saved.onesIndex;
+      }
+    }
+    undoStack.length = 0;
+    emit('reset');
+    emit('value');
+  }
+
+  function clampInt(v, lo, hi) { v = v | 0; return v < lo ? lo : (v > hi ? hi : v); }
+
+  function snapshot() {
+    return { rods: rods.map(r => ({ heaven: r.heaven, earth: r.earth })), onesIndex };
+  }
+  function pushUndo() {
+    undoStack.push(snapshot());
+    if (undoStack.length > CONFIG.undoDepth) undoStack.shift();
+  }
+
+  /* Set one rod's bead counts. Emits 'rod' with what changed so the
+     renderer can animate and the audio layer can voice the impacts.  */
+  function setRod(i, heaven, earth, meta) {
+    heaven = clampInt(heaven, 0, ATYPE.heavenBeads);
+    earth = clampInt(earth, 0, ATYPE.earthBeads);
+    const r = rods[i];
+    if (r.heaven === heaven && r.earth === earth) return false;
+    if (!meta || !meta.skipUndo) pushUndo();
+    const prev = { heaven: r.heaven, earth: r.earth };
+    r.heaven = heaven; r.earth = earth;
+    emit('rod', { index: i, prev, next: { heaven, earth }, meta: meta || {} });
+    emit('value');
+    return true;
+  }
+
+  function clearAll(meta) {
+    let any = false;
+    for (let i = 0; i < rodCount; i++) if (rods[i].heaven || rods[i].earth) { any = true; break; }
+    if (!any) return false;
+    pushUndo();
+    const changed = [];
+    for (let i = 0; i < rodCount; i++) {
+      if (rods[i].heaven || rods[i].earth) {
+        const prev = { heaven: rods[i].heaven, earth: rods[i].earth };
+        rods[i].heaven = 0; rods[i].earth = 0;
+        changed.push({ index: i, prev });
+      }
+    }
+    emit('clear', { changed, meta: meta || {} });
+    emit('value');
+    return true;
+  }
+
+  function undo() {
+    const snap = undoStack.pop();
+    if (!snap) return false;
+    for (let i = 0; i < rodCount; i++) {
+      const s = snap.rods[i] || { heaven: 0, earth: 0 };
+      rods[i].heaven = s.heaven; rods[i].earth = s.earth;
+    }
+    onesIndex = snap.onesIndex;
+    emit('reset');
+    emit('value');
+    return true;
+  }
+
+  function setOnes(i) {
+    if (i === onesIndex || i < 0 || i >= rodCount) return;
+    pushUndo();
+    onesIndex = i;
+    emit('ones', { index: i });
+    emit('value');
+  }
+
+  function rodValue(i) {
+    return rods[i].heaven * ATYPE.heavenValue + rods[i].earth * ATYPE.earthValue;
+  }
+
+  /* Bead counts that represent a value on one rod, derived from the
+     active abacus config (works for any heavenValue / bead counts).  */
+  function repr(v) {
+    for (let h = Math.min(ATYPE.heavenBeads, Math.floor(v / ATYPE.heavenValue)); h >= 0; h--) {
+      const rem = v - h * ATYPE.heavenValue;
+      if (rem >= 0 && rem % ATYPE.earthValue === 0 && rem / ATYPE.earthValue <= ATYPE.earthBeads) {
+        return { heaven: h, earth: rem / ATYPE.earthValue };
+      }
+    }
+    return null;
+  }
+
+  function setRodValue(i, v, meta) {
+    const r = repr(clampInt(v, 0, ROD_MAX));
+    if (r) setRod(i, r.heaven, r.earth, meta);
+  }
+
+  /* Formatted value string, built from per-rod digits so decimals are
+     exact. Rod values can exceed 9 in exotic configs (suanpan), so
+     carries are normalized for display.                              */
+  function valueString() {
+    const digits = [];
+    for (let i = 0; i < rodCount; i++) digits.push(rodValue(i));
+    for (let i = digits.length - 1; i > 0; i--) {       // normalize carries
+      if (digits[i] > 9) { digits[i - 1] += Math.floor(digits[i] / 10); digits[i] %= 10; }
+    }
+    if (digits[0] > 9) digits[0] %= 10;                  // overflow off the frame
+    let intDigits = digits.slice(0, onesIndex + 1);
+    let fracDigits = digits.slice(onesIndex + 1);
+    while (intDigits.length > 1 && intDigits[0] === 0) intDigits.shift();
+    while (fracDigits.length && fracDigits[fracDigits.length - 1] === 0) fracDigits.pop();
+    let intStr = '';
+    for (let i = 0; i < intDigits.length; i++) {
+      if (i > 0 && (intDigits.length - i) % 3 === 0) intStr += ',';
+      intStr += intDigits[i];
+    }
+    return fracDigits.length ? intStr + '.' + fracDigits.join('') : intStr;
+  }
+
+  return {
+    on, init, setRod, setRodValue, clearAll, undo, setOnes, repr,
+    rodValue, valueString, snapshot,
+    get rods() { return rods; },
+    get rodCount() { return rodCount; },
+    get onesIndex() { return onesIndex; },
+    rod(i) { return rods[i]; },
+  };
+})();
+
+/* =========================================================== Renderer
+   SVG construction and update. Reads State, never mutates it. All
+   paints reference <defs> gradients by id, so a skin change only
+   rewrites the defs. During drags, bead positions are written as
+   style.transform on cached <g> nodes — no re-render, no layout.     */
+const Renderer = (() => {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.getElementById('abacus');
+  const wrap = document.getElementById('abacusWrap');
+  let M = null;             // current layout metrics
+  let beadEls = [];         // beadEls[rod] = {heaven:[g], earth:[g]}
+  let rodGroups = [];       // focusable per-rod <g>
+  let dotEls = [];          // per-rod ones markers on the bar
+  let tutorLayer = null;
+  let defsEl = null;
+  let skinBits = { rodRects: [], frameEl: null, dotBase: [] };
+
+  function el(name, attrs, parent) {
+    const n = document.createElementNS(NS, name);
+    if (attrs) for (const k in attrs) n.setAttribute(k, attrs[k]);
+    if (parent) parent.appendChild(n);
+    return n;
+  }
+
+  /* ---- layout metrics, all derived from CONFIG + ABACUS type ---- */
+  function computeMetrics(rodCount) {
+    const G = CONFIG.geometry, bh = G.beadH;
+    const heavenH = (ATYPE.heavenBeads + 1) * bh;
+    const earthH = (ATYPE.earthBeads + 1) * bh;
+    const innerTop = G.frameTopBot;
+    const barY = innerTop + heavenH;
+    const barBot = barY + G.barH;
+    const innerBottom = barBot + earthH;
+    const W = 2 * G.frameSide + rodCount * G.rodSpacing;
+    const H = innerBottom + G.frameTopBot;
+    return { rodCount, bh, heavenH, earthH, innerTop, barY, barBot, innerBottom, W, H,
+             rodX: i => G.frameSide + (i + 0.5) * G.rodSpacing };
+  }
+
+  /* Rest positions. j/k are bead indices from the top of each section;
+     a = active count. Heaven beads activate from the bar upward,
+     earth beads from the bar downward — all derived from counts.     */
+  function heavenY(j, a) {
+    return (j >= ATYPE.heavenBeads - a)
+      ? M.barY - (ATYPE.heavenBeads - j - 0.5) * M.bh
+      : M.innerTop + (j + 0.5) * M.bh;
+  }
+  function earthY(k, a) {
+    return (k < a)
+      ? M.barBot + (k + 0.5) * M.bh
+      : M.innerBottom - (ATYPE.earthBeads - k - 0.5) * M.bh;
+  }
+  /* Absolute travel limits for a bead when its whole push-group is
+     compressed against the bar or the frame.                         */
+  function beadLimits(section, idx) {
+    if (section === 'heaven') {
+      return { min: M.innerTop + (idx + 0.5) * M.bh,
+               max: M.barY - (ATYPE.heavenBeads - idx - 0.5) * M.bh };
+    }
+    return { min: M.barBot + (idx + 0.5) * M.bh,
+             max: M.innerBottom - (ATYPE.earthBeads - idx - 0.5) * M.bh };
+  }
+
+  /* ---- defs: gradients rebuilt on every skin/theme change ---- */
+  function buildDefs(pal, skin) {
+    defsEl.textContent = '';
+    const lin = (id, stops, x1, y1, x2, y2) => {
+      const g = el('linearGradient', { id, x1, y1, x2, y2 }, defsEl);
+      stops.forEach(s => el('stop', { offset: s[0], 'stop-color': s[1] }, g));
+    };
+    lin('gBead', skinStops(pal.bead), '0', '0', '0', '1');
+    lin('gFrame', [['0%', pal.frame[0]], ['50%', pal.frame[1]], ['100%', pal.frame[2]]], '0', '0', '0', '1');
+    lin('gBar', [['0%', pal.bar[0]], ['100%', pal.bar[1]]], '0', '0', '0', '1');
+    lin('gRod', [['0%', pal.rod[0]], ['45%', pal.rod[1]], ['55%', pal.rod[1]], ['100%', pal.rod[0]]], '0', '0', '1', '0');
+    const hi = el('radialGradient', { id: 'gBeadHi', cx: '0.5', cy: '0.5', r: '0.5' }, defsEl);
+    el('stop', { offset: '0%', 'stop-color': pal.beadHi }, hi);
+    el('stop', { offset: '100%', 'stop-color': 'rgba(255,255,255,0)' }, hi);
+    const sh = el('radialGradient', { id: 'gShadow', cx: '0.5', cy: '0.5', r: '0.5' }, defsEl);
+    el('stop', { offset: '0%', 'stop-color': pal.shadow }, sh);
+    el('stop', { offset: '100%', 'stop-color': 'rgba(0,0,0,0)' }, sh);
+  }
+  function skinStops(stops) { return stops.map(s => [s[0], s[1]]); }
+
+  /* ---- bead shape path, from ABACUS type's beadShape ---- */
+  function beadPath(w, h) {
+    const hw = w / 2, hh = h / 2 - 1.5;
+    if (ATYPE.beadShape === 'rounded') {
+      /* suanpan-style barrel bead */
+      return `M ${-hw} 0 Q ${-hw} ${-hh} ${-hw * 0.45} ${-hh} L ${hw * 0.45} ${-hh} Q ${hw} ${-hh} ${hw} 0 Q ${hw} ${hh} ${hw * 0.45} ${hh} L ${-hw * 0.45} ${hh} Q ${-hw} ${hh} ${-hw} 0 Z`;
+    }
+    /* biconical soroban bead: sharp waist, softly rounded crown */
+    const tip = hw * 0.17;
+    return `M ${-hw} 0 L ${-tip * 1.7} ${-hh + 1} Q 0 ${-hh - 1.5} ${tip * 1.7} ${-hh + 1} L ${hw} 0 L ${tip * 1.7} ${hh - 1} Q 0 ${hh + 1.5} ${-tip * 1.7} ${hh - 1} L ${-hw} 0 Z`;
+  }
+
+  function makeBead(parent, rodIndex, section, idx, pal) {
+    const G = CONFIG.geometry;
+    const g = el('g', { class: 'bead-g' }, parent);
+    g.dataset.rod = rodIndex; g.dataset.section = section; g.dataset.idx = idx;
+    /* soft contact shadow, cheap radial gradient (no filters) */
+    el('ellipse', { class: 'bead-shadow', cx: 0, cy: G.beadH * 0.42, rx: G.beadW * 0.42, ry: G.beadH * 0.22, fill: 'url(#gShadow)' }, g);
+    el('path', { class: 'bead', d: beadPath(G.beadW, G.beadH), fill: 'url(#gBead)',
+                 stroke: pal.beadEdge, 'stroke-width': 1 }, g);
+    /* specular highlight riding the upper crown */
+    el('ellipse', { class: 'bead-hi', cx: -G.beadW * 0.14, cy: -G.beadH * 0.2, rx: G.beadW * 0.2, ry: G.beadH * 0.16, fill: 'url(#gBeadHi)' }, g);
+    /* invisible expanded hit area — guarantees >=44px touch targets
+       even when the abacus renders small */
+    el('rect', { class: 'bead-hit', x: -(G.rodSpacing / 2 - 1), y: -(G.beadH / 2 + G.hitPad),
+                 width: G.rodSpacing - 2, height: G.beadH + G.hitPad * 2, fill: 'transparent' }, g);
+    return g;
+  }
+
+  function build() {
+    const pal = currentPal();
+    const skin = SKINS[Settings.get('skin')];
+    M = computeMetrics(State.rodCount);
+    svg.setAttribute('viewBox', `0 0 ${M.W} ${M.H}`);
+    svg.textContent = '';
+    beadEls = []; rodGroups = []; dotEls = [];
+    skinBits = { rodRects: [], frameEl: null, dotBase: [] };
+    defsEl = el('defs', null, svg);
+    buildDefs(pal, skin);
+    const G = CONFIG.geometry;
+
+    /* backdrop behind the beads */
+    el('rect', { class: 'backdrop', x: G.frameSide - 4, y: M.innerTop - 4,
+                 width: M.W - 2 * G.frameSide + 8, height: M.innerBottom - M.innerTop + 8,
+                 fill: pal.backdrop }, svg);
+
+    /* rods */
+    for (let i = 0; i < M.rodCount; i++) {
+      const r = el('rect', { class: 'rodline', x: M.rodX(i) - skin.rodWidth / 2, y: M.innerTop,
+                             width: skin.rodWidth, height: M.innerBottom - M.innerTop,
+                             fill: 'url(#gRod)' }, svg);
+      skinBits.rodRects.push(r);
+    }
+
+    /* beads, one focusable group per rod */
+    for (let i = 0; i < M.rodCount; i++) {
+      const rg = el('g', { class: 'rodgroup', role: 'spinbutton', tabindex: i === 0 ? 0 : -1,
+                           'aria-valuemin': 0, 'aria-valuemax': ROD_MAX }, svg);
+      rg.dataset.rod = i;
+      el('rect', { class: 'rod-focus', x: M.rodX(i) - G.rodSpacing / 2 + 2, y: M.innerTop - 6,
+                   width: G.rodSpacing - 4, height: M.innerBottom - M.innerTop + 12, rx: 10 }, rg);
+      const entry = { heaven: [], earth: [] };
+      for (let j = 0; j < ATYPE.heavenBeads; j++) entry.heaven.push(makeBead(rg, i, 'heaven', j, pal));
+      for (let k = 0; k < ATYPE.earthBeads; k++) entry.earth.push(makeBead(rg, i, 'earth', k, pal));
+      beadEls.push(entry);
+      rodGroups.push(rg);
+    }
+
+    /* frame drawn over the beads so beads slide "under" it slightly */
+    const fr = el('path', { class: 'frame', 'fill-rule': 'evenodd', fill: 'url(#gFrame)',
+                            stroke: pal.frameEdge, 'stroke-width': 2,
+                            d: roundedFramePath(0, 0, M.W, M.H, 16, G.frameSide, M.innerTop, M.innerBottom) }, svg);
+    fr.dataset.frame = '1';
+    skinBits.frameEl = fr;
+
+    /* reckoning bar */
+    el('rect', { class: 'beam', x: G.frameSide - 2, y: M.barY, width: M.W - 2 * G.frameSide + 4,
+                 height: G.barH, fill: 'url(#gBar)', stroke: pal.frameEdge, 'stroke-width': 1 }, svg);
+
+    /* unit dots + per-rod ones-column tap zones on the bar */
+    for (let i = 0; i < M.rodCount; i++) {
+      const cx = M.rodX(i), cy = M.barY + G.barH / 2;
+      const isDot = (M.rodCount - 1 - i) % ATYPE.unitDotEvery === 0;
+      const dg = el('g', { class: 'unit-dot', role: 'button', tabindex: -1 }, svg);
+      dg.dataset.ones = i;
+      const ring = el('circle', { cx, cy, r: 7.5, fill: 'none', stroke: pal.dotActive, 'stroke-width': 2.5, opacity: 0 }, dg);
+      const dot = el('circle', { cx, cy, r: isDot ? 3.4 : 1.6, fill: pal.dot, opacity: isDot ? 1 : 0.45 }, dg);
+      el('rect', { x: cx - G.rodSpacing / 2, y: cy - 22, width: G.rodSpacing, height: 44, fill: 'transparent' }, dg);
+      dotEls.push({ g: dg, ring, dot, isDot });
+      skinBits.dotBase.push(dot);
+    }
+
+    tutorLayer = el('g', { class: 'tutor-layer' }, svg);
+
+    positionAll(false);
+    updateOnesMarker();
+    updateRodAria();
+    layout();
+  }
+
+  function roundedFramePath(x, y, w, h, r, side, top, bottom) {
+    const o = `M ${x + r} ${y} H ${x + w - r} Q ${x + w} ${y} ${x + w} ${y + r} V ${y + h - r} Q ${x + w} ${y + h} ${x + w - r} ${y + h} H ${x + r} Q ${x} ${y + h} ${x} ${y + h - r} V ${y + r} Q ${x} ${y} ${x + r} ${y} Z`;
+    const i = `M ${side} ${top} H ${w - side} V ${bottom} H ${side} Z`;
+    return o + ' ' + i;
+  }
+
+  function currentPal() {
+    const skin = SKINS[Settings.get('skin')] || SKINS[CONFIG.defaults.skin];
+    const mode = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+    return skin[mode];
+  }
+
+  /* Re-skin in place: rewrite gradients and the few literal paints. */
+  function applySkin() {
+    if (!M) return;
+    build(); /* full rebuild is cheap (runs only on settings change) and
+                keeps every paint consistent */
+  }
+
+  function setTransform(g, x, y) { g.style.transform = `translate(${x}px, ${y}px)`; }
+
+  function positionRod(i, animate, durMs, staggerMs) {
+    const r = State.rod(i);
+    const e = beadEls[i];
+    if (!r || !e) return; // mid-rebuild: State and SVG counts can briefly differ
+    const x = M.rodX(i);
+    let order = 0;
+    for (let j = 0; j < e.heaven.length; j++) {
+      const g = e.heaven[j];
+      applyPos(g, x, heavenY(j, r.heaven), animate, durMs, staggerMs ? (order++) * staggerMs : 0);
+    }
+    for (let k = 0; k < e.earth.length; k++) {
+      const g = e.earth[k];
+      applyPos(g, x, earthY(k, r.earth), animate, durMs, staggerMs ? (order++) * staggerMs : 0);
+    }
+  }
+  function applyPos(g, x, y, animate, durMs, delayMs) {
+    if (animate) {
+      g.style.setProperty('--snap-ms', (durMs || CONFIG.anim.snapMs) + 'ms');
+      g.style.transitionDelay = (delayMs || 0) + 'ms';
+      g.classList.add('snap');
+      /* drop the class after the transition so drags are unthrottled */
+      const total = (durMs || CONFIG.anim.snapMs) + (delayMs || 0) + 60;
+      setTimeout(() => { g.classList.remove('snap'); g.style.transitionDelay = '0ms'; }, total);
+    } else {
+      g.classList.remove('snap');
+    }
+    setTransform(g, x, y);
+  }
+
+  function positionAll(animate) {
+    for (let i = 0; i < M.rodCount; i++) positionRod(i, animate);
+  }
+
+  /* Direct bead placement during a drag — no transitions, no churn. */
+  function dragBead(rodIndex, section, idx, y) {
+    const g = beadEls[rodIndex][section][idx];
+    g.classList.remove('snap');
+    setTransform(g, M.rodX(rodIndex), y);
+  }
+
+  function clearCascade(changed) {
+    for (let n = 0; n < changed.length; n++) {
+      const i = changed[n].index;
+      positionRod(i, true, CONFIG.anim.snapMs, 0);
+      const gs = beadEls[i];
+      const delay = n * CONFIG.anim.clearStaggerMs;
+      [...gs.heaven, ...gs.earth].forEach(g => {
+        g.style.setProperty('--snap-ms', CONFIG.anim.snapMs + 'ms');
+        g.style.transitionDelay = delay + 'ms';
+        g.classList.add('snap');
+        setTimeout(() => { g.classList.remove('snap'); g.style.transitionDelay = '0ms'; }, delay + CONFIG.anim.snapMs + 60);
+      });
+    }
+  }
+
+  function updateOnesMarker() {
+    for (let i = 0; i < dotEls.length; i++) {
+      const d = dotEls[i], active = i === State.onesIndex;
+      d.ring.setAttribute('opacity', active ? 1 : 0);
+      d.dot.setAttribute('fill', active ? currentPal().dotActive : currentPal().dot);
+      d.dot.setAttribute('opacity', active ? 1 : (d.isDot ? 1 : 0.45));
+      d.g.setAttribute('aria-label', `Set rod ${i + 1} as the ones column` + (active ? ' (current ones column)' : ''));
+    }
+  }
+
+  function placeName(i) {
+    const p = State.onesIndex - i;
+    if (p === 0) return 'ones';
+    const names = { 1: 'tens', 2: 'hundreds', 3: 'thousands', [-1]: 'tenths', [-2]: 'hundredths', [-3]: 'thousandths' };
+    return names[p] || (p > 0 ? `10^${p}` : `10^${p}`);
+  }
+  function updateRodAria() {
+    for (let i = 0; i < rodGroups.length; i++) {
+      if (!State.rod(i)) continue; // mid-rebuild count mismatch
+      const v = State.rodValue(i);
+      rodGroups[i].setAttribute('aria-valuenow', v);
+      rodGroups[i].setAttribute('aria-label', `Rod ${i + 1} of ${M.rodCount}, ${placeName(i)} place`);
+      rodGroups[i].setAttribute('aria-valuetext', String(v));
+    }
+  }
+
+  /* ---- tutor overlay: glow + directional arrows on beads to move ---- */
+  function tutorHighlight(marks) {
+    tutorLayer.textContent = '';
+    const G = CONFIG.geometry;
+    for (const m of marks) {
+      const x = M.rodX(m.rod);
+      const gl = el('g', { class: 'tutor-glow' }, tutorLayer);
+      el('ellipse', { cx: x, cy: m.y, rx: G.beadW * 0.62, ry: G.beadH * 0.72,
+                      fill: 'none', stroke: 'var(--hint)', 'stroke-width': 3.5 }, gl);
+      const dir = m.dir; /* 'up' | 'down' */
+      const ay = dir === 'up' ? m.y - G.beadH * 1.15 : m.y + G.beadH * 1.15;
+      const s = dir === 'up' ? -1 : 1;
+      el('path', { class: 'tutor-arrow',
+                   d: `M ${x} ${ay + s * 9} L ${x - 8} ${ay - s * 5} H ${x + 8} Z`,
+                   fill: 'var(--hint)' }, tutorLayer);
+    }
+  }
+  function tutorClear() { if (tutorLayer) tutorLayer.textContent = ''; }
+  function shake() {
+    wrap.classList.remove('shake'); void wrap.offsetWidth; wrap.classList.add('shake');
+  }
+
+  /* ---- responsive sizing: fit stage, keep beads finger-sized ---- */
+  function layout() {
+    if (!M) return;
+    const stage = document.getElementById('stage');
+    const sw = stage.clientWidth - 8, sh = stage.clientHeight - 8;
+    if (sw <= 0 || sh <= 0) return;
+    const aspect = M.H / M.W;
+    let w = Math.min(sw, 1240);              // desktop comfort cap
+    if (w * aspect > sh) w = sh / aspect;    // fit height too
+    const perRod = w / M.rodCount;
+    if (perRod < CONFIG.geometry.minBeadPx) {
+      /* too cramped: keep beads usable, let the frame pan horizontally */
+      w = CONFIG.geometry.minBeadPx * M.rodCount;
+      if (w * aspect > sh) w = Math.max(w, sh / aspect);
+    }
+    svg.style.width = w + 'px';
+    svg.style.height = (w * aspect) + 'px';
+  }
+
+  /* Convert a pointer event to SVG user coordinates + the px→unit scale. */
+  function toSvgPoint(clientX, clientY) {
+    const rect = svg.getBoundingClientRect();
+    const scale = M.W / rect.width;
+    return { x: (clientX - rect.left) * scale, y: (clientY - rect.top) * scale, scale };
+  }
+
+  return {
+    build, applySkin, layout, positionRod, positionAll, dragBead, clearCascade,
+    updateOnesMarker, updateRodAria, tutorHighlight, tutorClear, shake,
+    heavenY, earthY, beadLimits, toSvgPoint,
+    get metrics() { return M; },
+    get svg() { return svg; },
+    get wrap() { return wrap; },
+    rodGroup: i => rodGroups[i],
+    bead: (i, s, j) => beadEls[i][s][j],
+  };
+})();
+
+/* ============================================================== Input
+   Pointer / mouse / keyboard handling and drag physics. Multi-touch:
+   every drag is tracked by pointerId, so independent simultaneous
+   drags on different rods just work. Beads push each other as a
+   chain in both directions; snapping is decided here, committed via
+   State, and drawn by the Renderer.                                  */
+const Input = (() => {
+  const P = CONFIG.physics;
+  const drags = new Map();        // pointerId -> drag record
+  const busy = new Set();         // "rod:section" currently dragged
+  const framePtrs = new Map();    // pointerId -> swipe-to-clear tracking
+  let focusedRod = 0;
+
+  function sectionBeads(section) {
+    return section === 'heaven' ? ATYPE.heavenBeads : ATYPE.earthBeads;
+  }
+  function activeCount(rod, section) {
+    const r = State.rod(rod);
+    return section === 'heaven' ? r.heaven : r.earth;
+  }
+  function restY(section, idx, a) {
+    return section === 'heaven' ? Renderer.heavenY(idx, a) : Renderer.earthY(idx, a);
+  }
+
+  function onPointerDown(e) {
+    AudioEngine.unlock();
+    const beadG = e.target.closest ? e.target.closest('.bead-g') : null;
+    if (beadG) {
+      e.preventDefault();
+      startBeadDrag(e, beadG);
+      return;
+    }
+    const dot = e.target.closest ? e.target.closest('.unit-dot') : null;
+    if (dot) return; // handled on click
+    /* anything else inside the SVG is frame/beam/backdrop: candidate
+       for the two-finger swipe-to-clear gesture */
+    framePtrs.set(e.pointerId, { x0: e.clientX, t0: performance.now(), lastX: e.clientX });
+  }
+
+  function startBeadDrag(e, beadG) {
+    const rod = +beadG.dataset.rod, section = beadG.dataset.section, idx = +beadG.dataset.idx;
+    const key = rod + ':' + section;
+    if (busy.has(key)) return;
+    busy.add(key);
+    const a = activeCount(rod, section);
+    const n = sectionBeads(section);
+    const pos = [];
+    for (let i = 0; i < n; i++) pos.push(restY(section, i, a));
+    const pt = Renderer.toSvgPoint(e.clientX, e.clientY);
+    const lim = Renderer.beadLimits(section, idx);
+    const d = {
+      rod, section, idx, key,
+      startClientX: e.clientX, startClientY: e.clientY, startT: performance.now(),
+      grabDY: pos[idx] - pt.y,
+      pos, wasMoving: new Array(n).fill(false),
+      lim, startActive: isActive(section, idx, a), startA: a,
+      lastClientY: e.clientY, lastT: performance.now(), vel: 0,
+      moved: false, atLimit: 0, scale: pt.scale,
+      capEl: e.target,
+    };
+    drags.set(e.pointerId, d);
+    try { e.target.setPointerCapture(e.pointerId); } catch (err) {}
+  }
+
+  function isActive(section, idx, a) {
+    return section === 'heaven' ? idx >= ATYPE.heavenBeads - a : idx < a;
+  }
+
+  function onPointerMove(e) {
+    const fp = framePtrs.get(e.pointerId);
+    if (fp) { fp.lastX = e.clientX; checkClearGesture(); }
+    const d = drags.get(e.pointerId);
+    if (!d) return;
+    e.preventDefault();
+    const now = performance.now();
+    const dt = Math.max(1, now - d.lastT);
+    const instV = (e.clientY - d.lastClientY) / dt;   // CSS px per ms
+    d.vel = d.vel + P.velSmoothing * (instV - d.vel);
+    d.lastClientY = e.clientY; d.lastT = now;
+    if (!d.moved) {
+      const dx = e.clientX - d.startClientX, dy = e.clientY - d.startClientY;
+      if (dx * dx + dy * dy > P.tapMaxMovePx * P.tapMaxMovePx) d.moved = true;
+    }
+
+    const pt = Renderer.toSvgPoint(e.clientX, e.clientY);
+    let y = pt.y + d.grabDY;
+    const clampedLow = y < d.lim.min, clampedHigh = y > d.lim.max;
+    if (clampedLow) y = d.lim.min;
+    if (clampedHigh) y = d.lim.max;
+
+    /* chain physics: the grabbed bead moves freely; neighbors are
+       pushed when contacted, in either direction, and left in place
+       when the grabbed bead moves away from them.                    */
+    const bh = Renderer.metrics.bh;
+    const pos = d.pos, n = pos.length;
+    const before = d.wasMoving;
+    const nowMoving = new Array(n).fill(false);
+    const prevIdxY = pos[d.idx];
+    pos[d.idx] = y;
+    nowMoving[d.idx] = Math.abs(y - prevIdxY) > 0.01;
+    for (let i = d.idx - 1; i >= 0; i--) {           // beads above (toward bar for earth / frame for heaven)
+      const limit = pos[i + 1] - bh;
+      if (pos[i] > limit) { pos[i] = limit; nowMoving[i] = true; }
+    }
+    for (let i = d.idx + 1; i < n; i++) {            // beads below
+      const limit = pos[i - 1] + bh;
+      if (pos[i] < limit) { pos[i] = limit; nowMoving[i] = true; }
+    }
+    for (let i = 0; i < n; i++) Renderer.dragBead(d.rod, d.section, i, pos[i]);
+
+    /* impact sounds while dragging */
+    const speed = Math.abs(d.vel);
+    if ((clampedLow || clampedHigh) && speed > P.impactMinVel) {
+      if (d.atLimit === 0) {
+        /* which surface did the compressed group just hit? */
+        const towardBar = d.section === 'earth' ? clampedLow : clampedHigh;
+        impact(towardBar ? 'bar' : 'frame', speed);
+        d.atLimit = clampedLow ? -1 : 1;
+      }
+    } else if (!clampedLow && !clampedHigh) {
+      d.atLimit = 0;
+    }
+    let stagger = 0;
+    for (let i = 0; i < n; i++) {
+      if (i !== d.idx && nowMoving[i] && !before[i] && speed > P.impactMinVel) {
+        impact('bead', speed * 0.8, stagger); stagger += CONFIG.audio.staggerMs;
+      }
+    }
+    d.wasMoving = nowMoving;
+  }
+
+  function onPointerUp(e) {
+    framePtrs.delete(e.pointerId);
+    const d = drags.get(e.pointerId);
+    if (!d) return;
+    drags.delete(e.pointerId);
+    busy.delete(d.key);
+    const dur = performance.now() - d.startT;
+
+    if (!d.moved && dur < P.tapMaxMs) { handleTap(d.rod, d.section, d.idx); return; }
+
+    /* --- release: decide commit vs return --- */
+    const activeY = d.section === 'earth' ? d.lim.min : d.lim.max;  // stacked at bar
+    const inactiveY = d.section === 'earth' ? d.lim.max : d.lim.min; // stacked at frame
+    const span = activeY - inactiveY;
+    const f = span === 0 ? 0 : (d.pos[d.idx] - inactiveY) / span;    // 0=rest, 1=at bar
+    let endActive = f > P.commitFraction;
+    /* flick momentum: fast release commits regardless of distance */
+    const speed = Math.abs(d.vel);
+    let flick = false;
+    if (speed > P.flickVelocity) {
+      const movingTowardBar = d.section === 'earth' ? d.vel < 0 : d.vel > 0;
+      endActive = movingTowardBar; flick = true;
+    }
+    const a = activeCount(d.rod, d.section);
+    const distFromBar = d.section === 'earth' ? d.idx : ATYPE.heavenBeads - 1 - d.idx;
+    const newA = endActive ? Math.max(a, distFromBar + 1) : Math.min(a, distFromBar);
+    const r = State.rod(d.rod);
+    const heaven = d.section === 'heaven' ? newA : r.heaven;
+    const earth = d.section === 'earth' ? newA : r.earth;
+    const meta = { source: 'drag', velocity: Math.max(speed, 0.15), flick };
+    const changed = State.setRod(d.rod, heaven, earth, meta);
+    if (!changed) {
+      /* no state change: beads return home with a soft settle */
+      Renderer.positionRod(d.rod, true, flick ? CONFIG.anim.flickSnapMs : CONFIG.anim.snapMs);
+      if (Math.abs(d.pos[d.idx] - restY(d.section, d.idx, a)) > 2) {
+        impact(endActive ? 'bar' : 'frame', 0.18, CONFIG.anim.snapMs * 0.7);
+      }
+    }
+  }
+
+  function onPointerCancel(e) {
+    framePtrs.delete(e.pointerId);
+    const d = drags.get(e.pointerId);
+    if (!d) return;
+    drags.delete(e.pointerId);
+    busy.delete(d.key);
+    Renderer.positionRod(d.rod, true);
+  }
+
+  /* Tap: activating bead N carries every bead between it and the bar;
+     deactivating carries everything between it and its rest. So
+     tapping the 3rd earth bead sets the rod's earth count to 3.      */
+  function handleTap(rod, section, idx) {
+    const a = activeCount(rod, section);
+    const distFromBar = section === 'earth' ? idx : ATYPE.heavenBeads - 1 - idx;
+    const newA = (distFromBar < a) ? distFromBar : distFromBar + 1;
+    const r = State.rod(rod);
+    const heaven = section === 'heaven' ? newA : r.heaven;
+    const earth = section === 'earth' ? newA : r.earth;
+    State.setRod(rod, heaven, earth, { source: 'tap', velocity: 0.35 });
+    focusRod(rod, false);
+  }
+
+  /* two-finger swipe left→right across the frame clears, like tilting */
+  function checkClearGesture() {
+    if (framePtrs.size < 2) return;
+    const now = performance.now();
+    let ok = 0;
+    framePtrs.forEach(fp => {
+      if (fp.lastX - fp.x0 > CONFIG.clearGesture.minDxPx && now - fp.t0 < CONFIG.clearGesture.maxDurMs) ok++;
+    });
+    if (ok >= 2) {
+      framePtrs.clear();
+      State.clearAll({ source: 'gesture' });
+    }
+  }
+
+  /* ---- keyboard ---- */
+  function focusRod(i, doFocus = true) {
+    const n = State.rodCount;
+    i = Math.max(0, Math.min(n - 1, i));
+    const prev = Renderer.rodGroup(focusedRod);
+    if (prev) prev.setAttribute('tabindex', -1); // may be stale after a rod-count change
+    focusedRod = i;
+    const g = Renderer.rodGroup(i);
+    g.setAttribute('tabindex', 0);
+    if (doFocus) g.focus();
+  }
+
+  function onKeyDown(e) {
+    const g = e.target.closest ? e.target.closest('.rodgroup') : null;
+    if (!g) return;
+    const i = +g.dataset.rod;
+    const r = State.rod(i);
+    const v = State.rodValue(i);
+    let handled = true;
+    if (e.key === 'ArrowLeft') focusRod(i - 1);
+    else if (e.key === 'ArrowRight') focusRod(i + 1);
+    else if (e.key === 'Home') focusRod(0);
+    else if (e.key === 'End') focusRod(State.rodCount - 1);
+    else if (e.key === 'ArrowUp') State.setRodValue(i, Math.min(ROD_MAX, v + 1), { source: 'key', velocity: 0.35 });
+    else if (e.key === 'ArrowDown') State.setRodValue(i, Math.max(0, v - 1), { source: 'key', velocity: 0.35 });
+    else if (e.key >= '0' && e.key <= '9') State.setRodValue(i, +e.key, { source: 'key', velocity: 0.35 });
+    else if (e.key === 'Backspace' || e.key === 'Delete') State.setRod(i, 0, 0, { source: 'key', velocity: 0.35 });
+    else handled = false;
+    if (handled) e.preventDefault();
+  }
+
+  function onGlobalKey(e) {
+    if (e.target.matches && e.target.matches('input, select, textarea')) return;
+    if (e.key === 'Escape' && !Settings.isOpen()) { State.clearAll({ source: 'key' }); e.preventDefault(); }
+    else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { State.undo(); e.preventDefault(); }
+  }
+
+  /* impact → audio + haptics, shared by drag/tap/snap feedback */
+  function impact(kind, velocity, delayMs) {
+    AudioEngine.play(kind, velocity, delayMs || 0);
+    Haptics.pulse(velocity);
+  }
+
+  function bind() {
+    const svg = Renderer.svg;
+    svg.addEventListener('pointerdown', onPointerDown);
+    svg.addEventListener('pointermove', onPointerMove);
+    svg.addEventListener('pointerup', onPointerUp);
+    svg.addEventListener('pointercancel', onPointerCancel);
+    svg.addEventListener('lostpointercapture', () => {});
+    svg.addEventListener('contextmenu', e => e.preventDefault());
+    svg.addEventListener('keydown', onKeyDown);
+    svg.addEventListener('click', e => {
+      const dot = e.target.closest ? e.target.closest('.unit-dot') : null;
+      if (dot) State.setOnes(+dot.dataset.ones);
+    });
+    window.addEventListener('keydown', onGlobalKey);
+  }
+
+  return { bind, focusRod, impact, get focusedRod() { return focusedRod; } };
+})();
+
+/* ======================================================== AudioEngine
+   All sound synthesized with Web Audio — zero samples, zero files.
+   Knows nothing about the DOM: callers pass an impact kind
+   ('bar' | 'bead' | 'frame') and a velocity; the active material
+   profile comes from Settings. A compressor on the master bus plus a
+   12-voice cap keeps fast cascades clean.                            */
+const AudioEngine = (() => {
+  const A = CONFIG.audio;
+  let ctx = null, master = null, comp = null, noiseBuf = null;
+  const voices = [];   // { t, gain, nodes:[] }
+
+  /* Material profiles. Frequencies are per impact kind:
+     bar = bead striking the reckoning bar (crispest),
+     bead = bead on bead (damped), frame = bead on frame (low body). */
+  const PROFILES = {
+    wood: {
+      noise: { bar: 850, bead: 560, frame: 360 }, q: 1.1,
+      burstMs: 12, decayMs: { bar: 70, bead: 60, frame: 110 },
+      thump: { freq: 180, drop: 0.86, gain: 0.5 },
+      partials: null,
+      gain: { bar: 1.0, bead: 0.55, frame: 0.8 },
+    },
+    metal: {
+      noise: { bar: 3200, bead: 2300, frame: 1400 }, q: 2.2,
+      burstMs: 9, decayMs: { bar: 90, bead: 70, frame: 120 },
+      thump: { freq: 150, drop: 0.9, gain: 0.25 },
+      partials: { ratios: [1, 1.73, 2.41], base: { bar: 2100, bead: 1500, frame: 780 },
+                  decayMs: 320, gain: 0.16 },
+      gain: { bar: 1.0, bead: 0.5, frame: 0.85 },
+    },
+    woodMetal: {
+      /* the wooden bead is what strikes, so mostly wood, with a faint
+         short high partial from the metal rod ringing through */
+      noise: { bar: 950, bead: 600, frame: 400 }, q: 1.2,
+      burstMs: 12, decayMs: { bar: 75, bead: 62, frame: 110 },
+      thump: { freq: 175, drop: 0.86, gain: 0.45 },
+      partials: { ratios: [1], base: { bar: 3400, bead: 2800, frame: 2200 },
+                  decayMs: 90, gain: 0.06 },
+      gain: { bar: 1.0, bead: 0.55, frame: 0.8 },
+    },
+  };
+
+  function ensure() {
+    if (ctx) return true;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return false;
+    ctx = new AC();
+    master = ctx.createGain();
+    master.gain.value = A.masterGain * Settings.get('volume');
+    comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -14; comp.knee.value = 12; comp.ratio.value = 6;
+    comp.attack.value = 0.002; comp.release.value = 0.12;
+    master.connect(comp); comp.connect(ctx.destination);
+    /* one shared 0.5s noise buffer, sliced per hit */
+    const len = Math.floor(ctx.sampleRate * 0.5);
+    noiseBuf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const data = noiseBuf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    return true;
+  }
+
+  function unlock() {
+    if (!Settings.get('sound')) return;
+    if (!ensure()) return;
+    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+  }
+
+  function setVolume(v) { if (master) master.gain.value = A.masterGain * v; }
+
+  function profile() {
+    let mat = Settings.get('material');
+    if (mat === 'auto') {
+      const skin = SKINS[Settings.get('skin')];
+      mat = skin ? skin.material : 'wood';
+    }
+    return PROFILES[mat] || PROFILES.wood;
+  }
+
+  function steal() {
+    while (voices.length >= A.maxVoices) {
+      const v = voices.shift();
+      try {
+        v.gain.gain.cancelScheduledValues(ctx.currentTime);
+        v.gain.gain.setTargetAtTime(0, ctx.currentTime, 0.004);
+        v.nodes.forEach(n => { try { n.stop(ctx.currentTime + 0.03); } catch (e) {} });
+      } catch (e) {}
+    }
+  }
+
+  /* kind: 'bar' | 'bead' | 'frame'; velocity in CSS px/ms; delayMs
+     lets callers roll a stack landing into a quick cascade.          */
+  function play(kind, velocity, delayMs) {
+    if (!Settings.get('sound')) return;
+    if (!ensure() || ctx.state !== 'running') return;
+    const p = profile();
+    const vel = Math.min(1, Math.max(0.08, velocity / 1.4));
+    const jitter = (Math.random() * 2 - 1) * A.humanizeTimeMs;
+    const t0 = ctx.currentTime + Math.max(0, (delayMs || 0) + jitter) / 1000;
+    const pitchR = 1 + (Math.random() * 2 - 1) * A.humanizePitch;
+    const outGain = ctx.createGain();
+    outGain.connect(master);
+    const nodes = [];
+    const level = Math.pow(vel, 1.3) * p.gain[kind];
+
+    steal();
+
+    /* 1) filtered noise burst — the "click" body of the strike */
+    const src = ctx.createBufferSource();
+    src.buffer = noiseBuf;
+    src.playbackRate.value = pitchR;
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = p.noise[kind] * pitchR * (0.8 + 0.5 * vel); // velocity brightens
+    bp.Q.value = p.q;
+    const ng = ctx.createGain();
+    const dec = p.decayMs[kind] / 1000;
+    ng.gain.setValueAtTime(level, t0);
+    ng.gain.exponentialRampToValueAtTime(0.001, t0 + p.burstMs / 1000 + dec);
+    src.connect(bp); bp.connect(ng); ng.connect(outGain);
+    src.start(t0, Math.random() * 0.3, 0.12);
+    nodes.push(src);
+
+    /* 2) low sine thump with a slight pitch drop — the "body" */
+    if (p.thump && (kind !== 'bead' || p.thump.gain > 0.3)) {
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      const f = p.thump.freq * pitchR * (kind === 'frame' ? 0.85 : 1);
+      osc.frequency.setValueAtTime(f, t0);
+      osc.frequency.exponentialRampToValueAtTime(f * p.thump.drop, t0 + 0.07);
+      const og = ctx.createGain();
+      og.gain.setValueAtTime(level * p.thump.gain * (kind === 'frame' ? 1.3 : 1), t0);
+      og.gain.exponentialRampToValueAtTime(0.001, t0 + 0.09);
+      osc.connect(og); og.connect(outGain);
+      osc.start(t0); osc.stop(t0 + 0.12);
+      nodes.push(osc);
+    }
+
+    /* 3) inharmonic partials — the metallic ring */
+    if (p.partials) {
+      const base = p.partials.base[kind] * pitchR;
+      const pdec = p.partials.decayMs / 1000;
+      p.partials.ratios.forEach((ratio, i) => {
+        const osc = ctx.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.value = base * ratio;
+        const og = ctx.createGain();
+        og.gain.setValueAtTime(level * p.partials.gain / (i + 1), t0);
+        og.gain.exponentialRampToValueAtTime(0.0005, t0 + pdec * (1 - i * 0.18));
+        osc.connect(og); og.connect(outGain);
+        osc.start(t0); osc.stop(t0 + pdec + 0.05);
+        nodes.push(osc);
+      });
+    }
+
+    voices.push({ t: t0, gain: outGain, nodes });
+    /* prune finished voices lazily */
+    const horizon = ctx.currentTime - 0.6;
+    while (voices.length && voices[0].t < horizon) voices.shift();
+  }
+
+  function onVisibility() {
+    if (document.visibilityState === 'visible' && ctx && ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
+    }
+  }
+  document.addEventListener('visibilitychange', onVisibility);
+
+  return { play, unlock, setVolume };
+})();
+
+/* ============================================================ Haptics
+   navigator.vibrate wrapper. iOS Safari lacks it — the toggle is
+   hidden there rather than shown broken.                             */
+const Haptics = (() => {
+  const supported = typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function';
+  function pulse(velocity) {
+    if (!supported || !Settings.get('haptics')) return;
+    const H = CONFIG.haptics;
+    const v = Math.min(1, Math.max(0, velocity / 1.4));
+    const ms = Math.round(H.minMs + (H.maxMs - H.minMs) * v);
+    try { navigator.vibrate(ms); } catch (e) {}
+  }
+  return { pulse, supported };
+})();
+
+/* ============================================================== Tutor
+   Guided lesson engine. Presents a problem, plans the standard
+   soroban bead technique (direct moves, 5's complements, 10's
+   complements, combined), highlights the beads for each step, and
+   validates the user's physical moves. The planner derives everything
+   from the ABACUS_TYPES config — heavenValue, bead counts, and rod
+   capacity — never from hardcoded soroban tables.                    */
+const Tutor = (() => {
+  const els = {};
+  let active = false;
+  let problem = null;      // { a, b, op, set }
+  let plan = [];           // [{rod, before:{h,e}, after:{h,e}, text}]
+  let stepIndex = 0;
+  let flags = null;        // technique flags from the last planning run
+  const HV = ATYPE.heavenValue;
+
+  function rodVal(r) { return r.h * ATYPE.heavenValue + r.e * ATYPE.earthValue; }
+  function reprHE(v) { const r = State.repr(v); return r ? { h: r.heaven, e: r.earth } : null; }
+  function beadName(count, value) {
+    return count === 1 ? `the ${value}-bead` : `${count} ${value}-beads`;
+  }
+  function moveWords(before, after) {
+    const parts = [];
+    const dh = after.h - before.h, de = after.e - before.e;
+    if (dh > 0) parts.push(`bring ${beadName(dh, HV)} down to the bar`);
+    if (dh < 0) parts.push(`push ${beadName(-dh, HV)} back up`);
+    if (de > 0) parts.push(`slide ${beadName(de, ATYPE.earthValue)} up`);
+    if (de < 0) parts.push(`slide ${beadName(-de, ATYPE.earthValue)} down`);
+    return parts.join(' and ');
+  }
+  function placePhrase(rodIdx) {
+    const p = State.onesIndex - rodIdx;
+    const names = { 0: 'ones', 1: 'tens', 2: 'hundreds', 3: 'thousands', [-1]: 'tenths', [-2]: 'hundredths' };
+    return names[p] !== undefined ? names[p] + ' rod' : `rod ${rodIdx + 1}`;
+  }
+
+  /* ---------- planner ---------- */
+  /* Rod columns carry base-10 place values, so the carry complement is
+     10 − n. Bead-level decomposition (direct vs 5's complement) comes
+     from repr(), which reads the abacus config.                      */
+  function planAddDigit(work, rodIdx, n, steps, f, inCarry) {
+    if (n === 0) return true;
+    if (rodIdx < 0) return false;                       // would overflow the frame
+    const cur = work[rodIdx], v = rodVal(cur), t = v + n;
+    if (t <= ROD_MAX) {
+      const r = reprHE(t);
+      if (r) {
+        const comp5 = !(r.h >= cur.h && r.e >= cur.e);
+        if (comp5 && !inCarry) f.comp5 = true;
+        if (comp5 && inCarry) f.comp5InCarry = true;
+        let text;
+        if (comp5) {
+          const taken = (cur.e - r.e) * ATYPE.earthValue;
+          text = inCarry
+            ? `…then here: you can't add ${n} directly, so add ${HV} and take away ${HV - n} (${moveWords(cur, r)}).`
+            : `Add ${n}: you don't have ${n} free ones, so use the small friend — add ${HV}, take away ${taken}. ${cap(moveWords(cur, r))}.`;
+        } else {
+          text = inCarry
+            ? `…and add ${n} here: ${moveWords(cur, r)}.`
+            : `Add ${n}: ${moveWords(cur, r)}.`;
+        }
+        steps.push({ rod: rodIdx, before: { ...cur }, after: r, text });
+        work[rodIdx] = { ...r };
+        return true;
+      }
+      return false;
+    }
+    /* 10's complement (big friend): carry 1 left, take the complement here */
+    f.comp10 = true;
+    const comp = 10 - n;
+    if (!planAddDigit(work, rodIdx - 1, 1, steps, f, true)) return false;
+    const carryStep = steps[steps.length - 1];
+    carryStep.text = `Add ${n}: this rod can't hold it — the big friend of ${n} is ${comp}. First carry: add 1 on the ${placePhrase(carryStep.rod)} to the left (${moveWords(carryStep.before, carryStep.after)}).`;
+    return planSubDigit(work, rodIdx, comp, steps, f, true);
+  }
+
+  function planSubDigit(work, rodIdx, n, steps, f, inBorrow) {
+    if (n === 0) return true;
+    if (rodIdx < 0) return false;
+    const cur = work[rodIdx], v = rodVal(cur), t = v - n;
+    if (t >= 0) {
+      const r = reprHE(t);
+      if (r) {
+        const comp5 = !(r.h <= cur.h && r.e <= cur.e);
+        if (comp5 && !inBorrow) f.comp5 = true;
+        if (comp5 && inBorrow) f.comp5InCarry = true;
+        let text;
+        if (comp5) {
+          const given = (r.e - cur.e) * ATYPE.earthValue;
+          text = inBorrow
+            ? `…then here: take away ${n} using the ${HV}-bead — remove ${HV}, give back ${given} (${moveWords(cur, r)}).`
+            : `Take away ${n}: not enough loose ones, so use the small friend — take away ${HV}, give back ${given}. ${cap(moveWords(cur, r))}.`;
+        } else {
+          text = inBorrow
+            ? `…then take away ${n} here: ${moveWords(cur, r)}.`
+            : `Take away ${n}: ${moveWords(cur, r)}.`;
+        }
+        steps.push({ rod: rodIdx, before: { ...cur }, after: r, text });
+        work[rodIdx] = { ...r };
+        return true;
+      }
+      return false;
+    }
+    /* 10's complement borrow: take 1 from the left, add the complement */
+    f.comp10 = true;
+    const comp = 10 - n;
+    if (!planSubDigit(work, rodIdx - 1, 1, steps, f, true)) return false;
+    const borrowStep = steps[steps.length - 1];
+    borrowStep.text = `Take away ${n}: this rod doesn't have it — the big friend of ${n} is ${comp}. First borrow: take 1 from the ${placePhrase(borrowStep.rod)} to the left (${moveWords(borrowStep.before, borrowStep.after)}).`;
+    return planAddDigit(work, rodIdx, comp, steps, f, true);
+  }
+
+  function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+
+  /* number → [{digit, place}] with place relative to the ones column */
+  function toDigits(numStr) {
+    const s = String(numStr);
+    const neg = s.startsWith('-');
+    const body = neg ? s.slice(1) : s;
+    const [int, frac = ''] = body.split('.');
+    const out = [];
+    for (let i = 0; i < int.length; i++) {
+      const d = int.charCodeAt(i) - 48;
+      if (d < 0 || d > 9) return null;
+      out.push({ digit: d, place: int.length - 1 - i });
+    }
+    for (let i = 0; i < frac.length; i++) {
+      const d = frac.charCodeAt(i) - 48;
+      if (d < 0 || d > 9) return null;
+      out.push({ digit: d, place: -(i + 1) });
+    }
+    return neg ? null : out;
+  }
+
+  /* Plan applying operand b (op '+'|'-') to the current rods,
+     most-significant digit first, per soroban convention.            */
+  function buildPlan(startRods, op, b) {
+    const work = startRods.map(r => ({ h: r.heaven, e: r.earth }));
+    const digits = toDigits(b);
+    if (!digits) return null;
+    const steps = [];
+    const f = { comp5: false, comp10: false, comp5InCarry: false };
+    for (const { digit, place } of digits) {
+      if (digit === 0) continue;
+      const rodIdx = State.onesIndex - place;
+      if (rodIdx < 0 || rodIdx >= State.rodCount) return null;
+      const ok = op === '+'
+        ? planAddDigit(work, rodIdx, digit, steps, f, false)
+        : planSubDigit(work, rodIdx, digit, steps, f, false);
+      if (!ok) return null;
+    }
+    return { steps, flags: f };
+  }
+
+  /* ---------- problem generation ---------- */
+  function randInt(lo, hi) { return lo + Math.floor(Math.random() * (hi - lo + 1)); }
+  function generate(set) {
+    const want = {
+      add1: { op: '+', comp5: false, comp10: false },
+      add5: { op: '+', comp5: true, comp10: false },
+      add10: { op: '+', comp10: true },
+      sub1: { op: '-', comp5: false, comp10: false },
+      sub5: { op: '-', comp5: true, comp10: false },
+      sub10: { op: '-', comp10: true },
+    }[set];
+    for (let tries = 0; tries < 400; tries++) {
+      let op, a, b;
+      if (set === 'mixed') {
+        op = Math.random() < 0.5 ? '+' : '-';
+        a = randInt(1, 99); b = randInt(1, 99);
+      } else {
+        op = want.op;
+        const twoDigit = (set === 'add10' || set === 'sub10' || Math.random() < 0.5);
+        a = twoDigit ? randInt(6, 99) : randInt(1, 9);
+        b = twoDigit ? randInt(2, 99) : randInt(1, 9);
+      }
+      if (op === '-' && b > a) { const t = a; a = b; b = t; }
+      if (op === '-' && b === a) continue;
+      const startRods = valueToRods(a);
+      if (!startRods) continue;
+      const built = buildPlan(startRods, op, b);
+      if (!built || built.steps.length === 0) continue;
+      if (set !== 'mixed') {
+        const anyComp5 = built.flags.comp5 || built.flags.comp5InCarry;
+        if (want.comp10 !== undefined && want.comp10 !== built.flags.comp10) continue;
+        if (want.comp5 !== undefined && want.comp5 !== anyComp5) continue;
+      }
+      return { a: String(a), b: String(b), op, plan: built.steps };
+    }
+    return null;
+  }
+
+  /* rods array (data only) representing integer value at current ones */
+  function valueToRods(v) {
+    const rods = State.rods.map(() => ({ heaven: 0, earth: 0 }));
+    const digits = toDigits(v);
+    if (!digits) return null;
+    for (const { digit, place } of digits) {
+      const rodIdx = State.onesIndex - place;
+      if (rodIdx < 0 || rodIdx >= rods.length) return null;
+      const r = State.repr(digit);
+      if (!r) return null;
+      rods[rodIdx] = r.heaven !== undefined ? { heaven: r.heaven, earth: r.earth } : null;
+    }
+    return rods;
+  }
+
+  /* ---------- session control ---------- */
+  function enter() {
+    active = true;
+    els.bar.hidden = false;
+    Renderer.layout();
+    setSet(els.set.value || 'add1');
+  }
+  function exit() {
+    active = false;
+    els.bar.hidden = true;
+    Renderer.tutorClear();
+    msg('');
+    Renderer.layout();
+  }
+  function setSet(set) {
+    els.set.value = set;
+    els.free.hidden = set !== 'free';
+    if (set === 'free') {
+      problem = null; plan = [];
+      els.problem.textContent = '';
+      els.progress.textContent = '';
+      Renderer.tutorClear();
+      msg('Enter a problem and press Start.');
+    } else {
+      newProblem();
+    }
+  }
+  function newProblem() {
+    const set = els.set.value;
+    if (set === 'free') { startFree(); return; }
+    if (State.onesIndex < 3) State.setOnes(State.rodCount - 1);
+    const p = generate(set);
+    if (!p) { msg('Could not build a problem — try another set.', 'err'); return; }
+    beginProblem(p);
+  }
+  function startFree() {
+    const aRaw = els.freeA.value.trim(), bRaw = els.freeB.value.trim();
+    const op = els.freeOp.value === '-' ? '-' : '+';
+    if (!/^\d+(\.\d+)?$/.test(aRaw) || !/^\d+(\.\d+)?$/.test(bRaw)) {
+      msg('Enter two positive numbers (decimals are fine).', 'err'); return;
+    }
+    if (op === '-' && parseFloat(bRaw) > parseFloat(aRaw)) {
+      msg('For subtraction, the second number must not be larger.', 'err'); return;
+    }
+    const startRods = valueToRods(aRaw);
+    if (!startRods) { msg('That number does not fit on the current rods.', 'err'); return; }
+    const built = buildPlan(startRods, op, bRaw);
+    if (!built) { msg('That problem does not fit on the current rods.', 'err'); return; }
+    if (built.steps.length === 0) { msg('Nothing to do — the second number is zero.', 'err'); return; }
+    beginProblem({ a: aRaw, b: bRaw, op, plan: built.steps });
+  }
+  function beginProblem(p) {
+    problem = p; plan = p.plan; stepIndex = 0;
+    els.problem.textContent = `${p.a} ${p.op === '+' ? '+' : '−'} ${p.b}`;
+    /* set the abacus to the first operand (setup, not solving) */
+    setRodsTo(valueToRods(p.a));
+    showStep();
+  }
+  function setRodsTo(rods) {
+    for (let i = 0; i < State.rodCount; i++) {
+      State.setRod(i, rods[i].heaven, rods[i].earth, { source: 'tutor', velocity: 0.3, skipUndo: true });
+    }
+  }
+  function showStep() {
+    if (stepIndex >= plan.length) {
+      els.progress.textContent = '';
+      Renderer.tutorClear();
+      const result = State.valueString();
+      msg(`Solved! ${els.problem.textContent} = ${result}. Press New problem for another.`, 'ok');
+      return;
+    }
+    const st = plan[stepIndex];
+    els.progress.textContent = `Step ${stepIndex + 1} of ${plan.length}`;
+    msg(st.text);
+    refreshHighlight();
+  }
+  /* Highlight the beads that still need to move for the current step,
+     diffed against the rod's live state so partial progress updates. */
+  function refreshHighlight() {
+    const st = plan[stepIndex];
+    if (!st) return;
+    const cur = State.rod(st.rod);
+    const marks = [];
+    const hCur = cur.heaven, hTgt = st.after.h;
+    if (hTgt > hCur) {
+      for (let j = ATYPE.heavenBeads - hTgt; j < ATYPE.heavenBeads - hCur; j++)
+        marks.push({ rod: st.rod, y: Renderer.heavenY(j, hCur), dir: 'down' });
+    } else if (hTgt < hCur) {
+      for (let j = ATYPE.heavenBeads - hCur; j < ATYPE.heavenBeads - hTgt; j++)
+        marks.push({ rod: st.rod, y: Renderer.heavenY(j, hCur), dir: 'up' });
+    }
+    const eCur = cur.earth, eTgt = st.after.e;
+    if (eTgt > eCur) {
+      for (let k = eCur; k < eTgt; k++)
+        marks.push({ rod: st.rod, y: Renderer.earthY(k, eCur), dir: 'up' });
+    } else if (eTgt < eCur) {
+      for (let k = eTgt; k < eCur; k++)
+        marks.push({ rod: st.rod, y: Renderer.earthY(k, eCur), dir: 'down' });
+    }
+    Renderer.tutorHighlight(marks);
+  }
+
+  /* validation: watch every user move while a step is pending */
+  function onRodChange(ev) {
+    if (!active || !plan.length || stepIndex >= plan.length) return;
+    if (ev.meta && (ev.meta.source === 'tutor')) return;
+    const st = plan[stepIndex];
+    const cur = State.rod(st.rod);
+    if (ev.index === st.rod && cur.heaven === st.after.h && cur.earth === st.after.e) {
+      stepIndex++;
+      if (stepIndex < plan.length) msg('Good.', 'ok');
+      showStep();
+      return;
+    }
+    /* partial progress inside the same step's box is fine */
+    if (ev.index === st.rod && between(cur.heaven, st.before.h, st.after.h)
+        && between(cur.earth, st.before.e, st.after.e)) {
+      refreshHighlight();
+      return;
+    }
+    /* anything else: gently flag it, keep the right move highlighted */
+    Renderer.shake();
+    msg(`Not quite — undo that and try: ${st.text}`, 'err');
+    refreshHighlight();
+  }
+  function between(v, a, b) { return v >= Math.min(a, b) && v <= Math.max(a, b); }
+
+  function onClear() {
+    if (!active || !problem || stepIndex >= plan.length) return;
+    /* clearing mid-problem: restore the working position for this step */
+    msg('Abacus cleared — restoring where you were.', 'err');
+    const rods = valueToRods(problem.a);
+    /* replay completed steps onto the restored start */
+    const work = rods.map(r => ({ heaven: r.heaven, earth: r.earth }));
+    for (let i = 0; i < stepIndex; i++) {
+      work[plan[i].rod] = { heaven: plan[i].after.h, earth: plan[i].after.e };
+    }
+    setRodsTo(work);
+    showStep();
+  }
+
+  function showMe() {
+    if (!active || stepIndex >= plan.length) return;
+    const st = plan[stepIndex];
+    State.setRod(st.rod, st.after.h, st.after.e,
+      { source: 'tutor', velocity: 0.25, durMs: CONFIG.anim.showMeMs });
+    stepIndex++;
+    msg('Like that.', 'ok');
+    showStep();
+  }
+
+  function msg(text, cls) {
+    els.msg.textContent = text;
+    els.msg.className = cls || '';
+  }
+
+  function init() {
+    els.bar = document.getElementById('tutorBar');
+    els.set = document.getElementById('tutorSet');
+    els.problem = document.getElementById('tutorProblem');
+    els.progress = document.getElementById('tutorProgress');
+    els.msg = document.getElementById('tutorMsg');
+    els.free = document.getElementById('freeForm');
+    els.freeA = document.getElementById('freeA');
+    els.freeB = document.getElementById('freeB');
+    els.freeOp = document.getElementById('freeOp');
+    document.getElementById('freeGo').addEventListener('click', startFree);
+    document.getElementById('tutorShow').addEventListener('click', showMe);
+    document.getElementById('tutorNew').addEventListener('click', newProblem);
+    document.getElementById('tutorExit').addEventListener('click', exit);
+    els.set.addEventListener('change', () => setSet(els.set.value));
+    State.on('rod', onRodChange);
+    State.on('clear', onClear);
+  }
+
+  return { init, enter, exit, buildPlan, get active() { return active; } };
+})();
+
+/* =========================================================== Settings
+   Persistence plus the settings UI (slide-over sheet). All values go
+   through Store, which falls back to memory when storage throws.     */
+const Settings = (() => {
+  const KEY = 'soroban.settings';
+  let cfg = Object.assign({}, CONFIG.defaults, Store.get(KEY, {}));
+  let open = false;
+  const els = {};
+  let mediaQ = null;
+
+  function get(k) { return cfg[k]; }
+  function set(k, v, apply) {
+    cfg[k] = v;
+    Store.set(KEY, cfg);
+    if (apply !== false) applyOne(k);
+  }
+  function isOpen() { return open; }
+
+  function resolvedTheme() {
+    if (cfg.theme !== 'auto') return cfg.theme;
+    return (window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+  }
+  function applyTheme() {
+    document.documentElement.setAttribute('data-theme', resolvedTheme());
+    Renderer.applySkin();
+    syncThemeButtons();
+  }
+  function syncThemeButtons() {
+    document.querySelectorAll('[data-theme-opt]').forEach(b => {
+      b.setAttribute('aria-pressed', String(b.dataset.themeOpt === cfg.theme));
+    });
+  }
+
+  function applyOne(k) {
+    switch (k) {
+      case 'theme': applyTheme(); break;
+      case 'skin': Renderer.applySkin(); break;
+      case 'volume': AudioEngine.setVolume(cfg.volume); break;
+      case 'sound': App.syncSoundButton(); break;
+      case 'readout': App.syncReadout(); break;
+      case 'rodCount':
+        State.init(cfg.rodCount, null);
+        Renderer.build();
+        App.syncRotateHint();
+        break;
+    }
+  }
+
+  function show(v) {
+    open = v;
+    els.panel.hidden = !v;
+    els.scrim.hidden = !v;
+    if (v) els.close.focus();
+    else document.getElementById('btnSettings').focus();
+  }
+
+  function init() {
+    els.panel = document.getElementById('settings');
+    els.scrim = document.getElementById('scrim');
+    els.close = document.getElementById('settingsClose');
+    document.getElementById('btnSettings').addEventListener('click', () => show(true));
+    els.close.addEventListener('click', () => show(false));
+    els.scrim.addEventListener('click', () => show(false));
+    window.addEventListener('keydown', e => { if (e.key === 'Escape' && open) { show(false); e.stopPropagation(); } }, true);
+
+    /* skin select — populated from the SKINS registry */
+    const skinSel = document.getElementById('setSkin');
+    for (const key in SKINS) {
+      const o = document.createElement('option');
+      o.value = key; o.textContent = SKINS[key].name;
+      skinSel.appendChild(o);
+    }
+    skinSel.value = cfg.skin;
+    skinSel.addEventListener('change', () => set('skin', skinSel.value));
+
+    /* theme segmented control */
+    document.querySelectorAll('[data-theme-opt]').forEach(b => {
+      b.addEventListener('click', () => set('theme', b.dataset.themeOpt));
+    });
+    syncThemeButtons();
+    if (window.matchMedia) {
+      mediaQ = matchMedia('(prefers-color-scheme: dark)');
+      const onChange = () => { if (cfg.theme === 'auto') applyTheme(); };
+      if (mediaQ.addEventListener) mediaQ.addEventListener('change', onChange);
+      else if (mediaQ.addListener) mediaQ.addListener(onChange);
+    }
+
+    /* sound / volume / material */
+    const sound = document.getElementById('setSound');
+    sound.checked = cfg.sound;
+    sound.addEventListener('change', () => { set('sound', sound.checked); AudioEngine.unlock(); });
+    const vol = document.getElementById('setVolume');
+    vol.value = Math.round(cfg.volume * 100);
+    vol.addEventListener('input', () => set('volume', vol.value / 100));
+    vol.addEventListener('change', () => AudioEngine.play('bar', 0.5, 0));
+    const mat = document.getElementById('setMaterial');
+    mat.value = cfg.material;
+    mat.addEventListener('change', () => { set('material', mat.value); AudioEngine.play('bar', 0.5, 0); });
+
+    /* haptics — hidden entirely where unsupported (iOS Safari) */
+    const hapticsRow = document.getElementById('hapticsRow');
+    if (!Haptics.supported) hapticsRow.style.display = 'none';
+    const hap = document.getElementById('setHaptics');
+    hap.checked = cfg.haptics;
+    hap.addEventListener('change', () => set('haptics', hap.checked));
+
+    /* rods */
+    const rods = document.getElementById('setRods');
+    CONFIG.rodCounts.forEach(n => {
+      const o = document.createElement('option');
+      o.value = n; o.textContent = `${n} rods`;
+      rods.appendChild(o);
+    });
+    rods.value = cfg.rodCount;
+    rods.addEventListener('change', () => set('rodCount', +rods.value));
+
+    /* readout + tutor entry */
+    const ro = document.getElementById('setReadout');
+    ro.checked = cfg.readout;
+    ro.addEventListener('change', () => set('readout', ro.checked));
+    document.getElementById('setTutor').addEventListener('click', () => { show(false); Tutor.enter(); });
+  }
+
+  return { init, get, set, isOpen };
+})();
+
+/* ================================================================ App
+   Wiring: State events → Renderer animation + AudioEngine impacts +
+   readout + ARIA. Also startup, persistence of bead state, layout,
+   and the dev self-checks.                                           */
+const App = (() => {
+  const STATE_KEY = 'soroban.state';
+  let saveTimer = 0, liveTimer = 0;
+  let lastReadout = '';
+
+  /* ---- sounds for a committed rod change ---- */
+  function voiceRodChange(ev) {
+    const meta = ev.meta || {};
+    if (meta.source === 'tutor') return;   // setup moves are silent-ish
+    const vel = meta.velocity || 0.35;
+    let delay = 0;
+    const stagger = CONFIG.audio.staggerMs;
+    ['heaven', 'earth'].forEach(sec => {
+      const d = ev.next[sec] - ev.prev[sec];
+      if (d === 0) return;
+      const n = Math.abs(d);
+      /* moving toward the bar lands on the bar; away lands on frame */
+      const firstKind = d > 0 ? 'bar' : 'frame';
+      AudioEngine.play(firstKind, vel * (meta.flick ? 1.25 : 1), delay);
+      Haptics.pulse(vel);
+      delay += stagger;
+      for (let i = 1; i < n; i++) { AudioEngine.play('bead', vel * 0.8, delay); delay += stagger; }
+    });
+  }
+
+  function onRod(ev) {
+    const meta = ev.meta || {};
+    const dur = meta.durMs || (meta.flick ? CONFIG.anim.flickSnapMs : CONFIG.anim.snapMs);
+    Renderer.positionRod(ev.index, true, dur);
+    voiceRodChange(ev);
+    Renderer.updateRodAria();
+  }
+
+  function onClear(ev) {
+    Renderer.clearCascade(ev.changed);
+    Renderer.updateRodAria();
+    const meta = ev.meta || {};
+    if (meta.source !== 'tutor') {
+      let delay = 0;
+      ev.changed.forEach(ch => {
+        const n = ch.prev.heaven + ch.prev.earth;
+        AudioEngine.play('frame', 0.5, delay);
+        for (let i = 1; i < n; i++) AudioEngine.play('bead', 0.35, delay + i * CONFIG.audio.staggerMs);
+        delay += CONFIG.anim.clearStaggerMs;
+      });
+      Haptics.pulse(0.6);
+    }
+  }
+
+  /* ---- readout ---- */
+  const readoutEl = document.getElementById('readout');
+  function syncReadout() {
+    readoutEl.hidden = !Settings.get('readout');
+    renderReadout(true);
+  }
+  function renderReadout(force) {
+    const s = State.valueString();
+    if (!force && s === lastReadout) return;
+    const prev = lastReadout;
+    lastReadout = s;
+    if (readoutEl.hidden) return;
+    readoutEl.textContent = '';
+    const frag = document.createDocumentFragment();
+    /* animate only characters that changed, right-aligned comparison */
+    const pOff = prev.length - s.length;
+    for (let i = 0; i < s.length; i++) {
+      const span = document.createElement('span');
+      span.className = 'dg';
+      span.textContent = s[i];
+      const pi = i + pOff;
+      if (force || pi < 0 || prev[pi] !== s[i]) span.classList.add('in');
+      frag.appendChild(span);
+    }
+    readoutEl.appendChild(frag);
+  }
+
+  /* ---- ARIA live announcements, polite + debounced ---- */
+  const liveEl = document.getElementById('live');
+  function announce() {
+    clearTimeout(liveTimer);
+    liveTimer = setTimeout(() => { liveEl.textContent = 'Value ' + State.valueString(); }, 600);
+  }
+
+  /* ---- persistence of bead state ---- */
+  function saveState() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      const snap = State.snapshot();
+      Store.set(STATE_KEY, { rodCount: State.rodCount, rods: snap.rods, onesIndex: snap.onesIndex });
+    }, 250);
+  }
+
+  function onValue() { renderReadout(false); announce(); saveState(); }
+
+  /* ---- top-bar buttons ---- */
+  function syncSoundButton() {
+    document.getElementById('btnSound').setAttribute('aria-pressed', String(Settings.get('sound')));
+  }
+  function bindButtons() {
+    document.getElementById('btnClear').addEventListener('click', () => State.clearAll({ source: 'button' }));
+    document.getElementById('btnUndo').addEventListener('click', () => State.undo());
+    document.getElementById('btnSound').addEventListener('click', () => {
+      Settings.set('sound', !Settings.get('sound'));
+      AudioEngine.unlock();
+    });
+  }
+
+  /* ---- rotate hint for many rods in portrait ---- */
+  let hintDismissed = false;
+  function syncRotateHint() {
+    const hint = document.getElementById('rotateHint');
+    const portrait = window.innerHeight > window.innerWidth;
+    hint.hidden = hintDismissed || !portrait || State.rodCount < 17;
+  }
+
+  /* ---- dev self-checks: fail loudly if layout logic ever assumes a
+     fixed bead count instead of reading ABACUS_TYPES ---- */
+  function devChecks() {
+    const fail = m => console.error('SOROBAN DEV CHECK FAILED: ' + m);
+    for (const key in ABACUS_TYPES) {
+      const t = ABACUS_TYPES[key];
+      ['heavenBeads', 'heavenValue', 'earthBeads', 'earthValue', 'name', 'beadShape'].forEach(f => {
+        if (t[f] === undefined) fail(`ABACUS_TYPES.${key} missing "${f}"`);
+      });
+    }
+    /* every value 0..ROD_MAX must be representable with the config */
+    for (let v = 0; v <= ROD_MAX; v++) {
+      if (!State.repr(v)) fail(`value ${v} not representable with the ${ATYPE.name} config`);
+    }
+    /* geometry must scale with bead counts, not constants */
+    const M = Renderer.metrics;
+    const expHeaven = (ATYPE.heavenBeads + 1) * CONFIG.geometry.beadH;
+    const expEarth = (ATYPE.earthBeads + 1) * CONFIG.geometry.beadH;
+    if (Math.abs(M.heavenH - expHeaven) > 0.01) fail('heaven region not derived from heavenBeads');
+    if (Math.abs(M.earthH - expEarth) > 0.01) fail('earth region not derived from earthBeads');
+    if (Renderer.bead(0, 'heaven', ATYPE.heavenBeads - 1) === undefined) fail('heaven beads not built from config count');
+    if (Renderer.bead(0, 'earth', ATYPE.earthBeads - 1) === undefined) fail('earth beads not built from config count');
+    /* the tutor planner must run purely from config */
+    const start = State.rods.map(() => ({ heaven: 0, earth: 0 }));
+    const p = Tutor.buildPlan(start, '+', '8');
+    if (!p || !p.steps.length) fail('tutor planner failed on a basic addition');
+  }
+
+  function init() {
+    Settings.init();
+    const saved = Store.get(STATE_KEY, null);
+    const rodCount = CONFIG.rodCounts.includes(Settings.get('rodCount'))
+      ? Settings.get('rodCount') : CONFIG.defaults.rodCount;
+    State.init(rodCount, saved);
+    Renderer.build();
+    Input.bind();
+    Tutor.init();
+    bindButtons();
+    syncSoundButton();
+    syncReadout();
+    syncRotateHint();
+    document.getElementById('rotateHintClose').addEventListener('click', () => {
+      hintDismissed = true; syncRotateHint();
+    });
+
+    State.on('rod', onRod);
+    State.on('clear', onClear);
+    State.on('value', onValue);
+    State.on('ones', () => { Renderer.updateOnesMarker(); Renderer.updateRodAria(); saveState(); });
+    State.on('reset', () => { Renderer.positionAll(true); Renderer.updateOnesMarker(); Renderer.updateRodAria(); });
+
+    /* orientation / resize: relayout only — bead state is untouched */
+    window.addEventListener('resize', () => { Renderer.layout(); syncRotateHint(); });
+    window.addEventListener('orientationchange', () => setTimeout(() => { Renderer.layout(); syncRotateHint(); }, 60));
+
+    /* unlock audio on the very first gesture anywhere */
+    const unlockOnce = () => { AudioEngine.unlock(); };
+    window.addEventListener('pointerdown', unlockOnce, { once: true, capture: true });
+    window.addEventListener('keydown', unlockOnce, { once: true, capture: true });
+
+    renderReadout(true);
+    devChecks();
+  }
+
+  return { init, syncSoundButton, syncReadout, syncRotateHint };
+})();
+
+App.init();
+</script>
+</body>
+</html>
